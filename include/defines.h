@@ -7,23 +7,41 @@ typedef struct gyro_data_s {
     float z;
 } gyro_data_t;
 
+typedef struct dht_data_s {
+    float temperature;
+    float humidity;
+} dht_data_t;
+
+typedef struct accel_data_s {
+    float x;
+    float y;
+    float z;
+} accel_data_t;
+
+typedef struct mq135_data_s {
+    float ppm;
+    float voltage;
+} mq135_data_t;
+
+#define MQ_PIN 4
+
 #define GYRO_SCL
 #define GYRO_SDA
 #define GYRO_XDA
 #define GYRO_XCL
 #define GYRO_INT
 
-#define DHT_PIN
+#define DHT_PIN 15
 
-#define HC_SR04_TRIG
-#define HC_SR04_ECHO
+#define HC_SR04_TRIG 22
+#define HC_SR04_ECHO 23
 
-#define BASE_SERVO
-#define SHOULDER_SERVO
-#define ELBOW_SERVO
-#define WRIST_SERVO
+#define BASE_SERVO 14
+#define SHOULDER_SERVO 27
+#define ELBOW_SERVO 19
+#define GRIPPER_SERVO 21
 
-#define BUZZER_PIN
+#define BUZZER_PIN 13
 
 #define ENABLE_PIN_1
 #define ENABLE_PIN_2
@@ -33,5 +51,15 @@ typedef struct gyro_data_s {
 
 #define MOTOR2_IN1
 #define MOTOR2_IN2
+
+void initialize_pins();
+void Buzz();
+accel_data_t ReadAccel();
+double ReadIMUTemp();
+gyro_data_t ReadGyro();
+void InitializeIMU();
+void MQTT_INITIALIZE();
+void printPayload(char *topic, byte *message, unsigned int length);
+void callback(char *topic, byte *message, unsigned int length);
 
 #endif
