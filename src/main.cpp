@@ -9,7 +9,7 @@ Servo base, shoulder, elbow, gripper;
 static const BaseType_t servo_cpu = 1;
 static const BaseType_t led_cpu = 0;
 
-void toggleLED1(void *parameter)
+void toggleLED1(void *ptr)
 {
   while (1)
   {
@@ -21,7 +21,7 @@ void toggleLED1(void *parameter)
   vTaskDelete(NULL);
 }
 
-void toggleLED2(void *parameter)
+void toggleLED2(void *ptr)
 {
   while (1)
   {
@@ -33,7 +33,7 @@ void toggleLED2(void *parameter)
   vTaskDelete(NULL);
 }
 
-void toggleLED3(void *parameter)
+void toggleLED3(void *ptr)
 {
   while (1)
   {
@@ -46,7 +46,7 @@ void toggleLED3(void *parameter)
 }
 
 
-void test_servos(void *parameter)
+void test_servos(void *ptr)
 {
   base.write(100);
   vTaskDelay(1000 / portTICK_PERIOD_MS);
