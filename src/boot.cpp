@@ -1,12 +1,11 @@
 #include <Arduino.h>
 #include "defines.h"
 
-
 /**
  * @initialize_pins - Initializes the device pins
  *
  */
- 
+
 void initialize_pins()
 {
 
@@ -17,5 +16,9 @@ void initialize_pins()
 
     // DHT11 Pin
     pinMode(DHT_PIN, INPUT);
+    pinMode(BUZZER_PIN, OUTPUT);
 
+    pinMode(LED_PIN_1, OUTPUT);
+    pinMode(LED_PIN_2, OUTPUT);
+    pinMode(LED_PIN_3, OUTPUT);
 }

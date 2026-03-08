@@ -27,6 +27,10 @@ void MQTT_INITIALIZE()
     }
 
     Serial.println("Connected to the Wi-Fi network");
+
+    Pulsate(BUZZER_PIN, 2, 300);
+    Pulsate(LED_PIN_2, 2, 300);
+
     Serial.println("Before Connect MQTT");
     client.setServer(mqtt_broker, mqtt_port);
 
@@ -39,16 +43,20 @@ void MQTT_INITIALIZE()
         if (client.connect(client_id.c_str(), mqtt_username, mqtt_password))
         {
             Serial.println("Public MQTT broker connected");
+            Pulsate(BUZZER_PIN, 4, 200);
+            Pulsate(LED_PIN_2, 4, 200);
         }
         else
         {
             Serial.print("failed with state ");
             Serial.print(client.state());
+            Pulsate(BUZZER_PIN, 8, 100);
+            Pulsate(LED_PIN_3, 8, 100);
             delay(2000);
         }
     }
-    Serial.println("After Connect MQTT");
-    client.publish(topic_publish, "Hi, I'm ESP32 ^^");
+
+    client.publish(topic_publish, "Boot Notification");
     client.subscribe(topic_subsrcibe);
     client.setCallback(callback);
 }
@@ -71,3 +79,52 @@ void printPayload(char *topic, byte *message, unsigned int length)
     }
     Serial.println();
 }
+
+class RobotMQTT
+{
+    private:
+        PubSubClient mqtt_client ;
+    public:
+        RobotMQTT(char ssid[], char password[])
+        {
+            WiFi.begin(ssid, password);
+
+            while (WiFi.status() != WL_CONNECTED)
+            {
+                delay(500);
+                Serial.println("Connecting to WiFi..");
+            }
+
+            Serial.println("Connected to the Wi-Fi network");
+
+            Pulsate(BUZZER_PIN, 2, 300);
+            Pulsate(LED_PIN_2, 2, 300);
+
+            Serial.println("Before Connect MQTT");
+            client.setServer(mqtt_broker, mqtt_port);
+
+            while (!client.connected())
+            {
+                String client_id = "warehouse-robot-";
+                client_id = client_id + String(WiFi.macAddress());
+
+                Serial.printf("The client %s connects to the public MQTT broker\n", client_id.c_str());
+                if (client.connect(client_id.c_str(), mqtt_username, mqtt_password))
+                {
+                    mqtt_client = client;
+                    Serial.println("Public MQTT broker connected");
+                    Pulsate(BUZZER_PIN, 4, 200);
+                    Pulsate(LED_PIN_2, 4, 200);
+                }
+                else
+                {
+                    Serial.print("failed with state ");
+                    Serial.print(client.state());
+                    Pulsate(BUZZER_PIN, 8, 100);
+                    Pulsate(LED_PIN_3, 8, 100);
+                    delay(2000);
+                }
+            }
+        };
+
+};

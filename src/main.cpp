@@ -9,18 +9,13 @@ Servo base, shoulder, elbow, gripper;
 static const BaseType_t servo_cpu = 1;
 static const BaseType_t led_cpu = 0;
 
-static const int led_pin1 = LED_BUILTIN;
-static const int led_pin2 = 32;
-static const int led_pin3 = 33;
-static const int led_pin4 = 25;
-
 void toggleLED1(void *parameter)
 {
   while (1)
   {
-    digitalWrite(led_pin1, HIGH);
+    digitalWrite(LED_PIN_1, HIGH);
     vTaskDelay(500 / portTICK_PERIOD_MS);
-    digitalWrite(led_pin1, LOW);
+    digitalWrite(LED_PIN_1, LOW);
     vTaskDelay(500 / portTICK_PERIOD_MS);
   }
   vTaskDelete(NULL);
@@ -30,9 +25,9 @@ void toggleLED2(void *parameter)
 {
   while (1)
   {
-    digitalWrite(led_pin2, HIGH);
+    digitalWrite(LED_PIN_2, HIGH);
     vTaskDelay(400 / portTICK_PERIOD_MS);
-    digitalWrite(led_pin2, LOW);
+    digitalWrite(LED_PIN_2, LOW);
     vTaskDelay(400 / portTICK_PERIOD_MS);
   }
   vTaskDelete(NULL);
@@ -42,25 +37,14 @@ void toggleLED3(void *parameter)
 {
   while (1)
   {
-    digitalWrite(led_pin3, HIGH);
+    digitalWrite(LED_PIN_3, HIGH);
     vTaskDelay(400 / portTICK_PERIOD_MS);
-    digitalWrite(led_pin3, LOW);
+    digitalWrite(LED_PIN_3, LOW);
     vTaskDelay(400 / portTICK_PERIOD_MS);
   }
   vTaskDelete(NULL);
 }
 
-void toggleLED4(void *parameter)
-{
-  while (1)
-  {
-    digitalWrite(led_pin4, HIGH);
-    vTaskDelay(400 / portTICK_PERIOD_MS);
-    digitalWrite(led_pin4, LOW);
-    vTaskDelay(400 / portTICK_PERIOD_MS);
-  }
-  vTaskDelete(NULL);
-}
 
 void test_servos(void *parameter)
 {
@@ -119,23 +103,22 @@ void setup()
   gripper.write(0);
   base.write(0);
 
-  pinMode(led_pin1, OUTPUT);
-  pinMode(led_pin2, OUTPUT);
-  pinMode(led_pin3, OUTPUT);
-  pinMode(led_pin4, OUTPUT);
 
   initialize_pins();
-  Buzz();
+  Pulsate(BUZZER_PIN, 2, 2500);
   MQTT_INITIALIZE();
 
 
-  xTaskCreatePinnedToCore(test_servos, "Test Servos", 4096, NULL, 1, NULL, servo_cpu);
+  // xTaskCreatePinnedToCore(test_servos, "Test Servos", 4096, NULL, 1, NULL, servo_cpu);
   xTaskCreatePinnedToCore(toggleLED1, "Toggle LED1", 2048, NULL, 1, NULL, led_cpu);
-  xTaskCreatePinnedToCore(toggleLED2, "Toggle LED2", 2048, NULL, 1, NULL, led_cpu);
-  xTaskCreatePinnedToCore(toggleLED3, "Toggle LED3", 2048, NULL, 1, NULL, led_cpu);
-  xTaskCreatePinnedToCore(toggleLED4, "Toggle LED4", 2048, NULL, 1, NULL, led_cpu);
+
+  // xTaskCreatePinnedToCore(toggleLED2, "Toggle LED2", 2048, NULL, 1, NULL, led_cpu);
+  // xTaskCreatePinnedToCore(toggleLED3, "Toggle LED3", 2048, NULL, 1, NULL, led_cpu);
+  // xTaskCreatePinnedToCore(toggleLED4, "Toggle LED4", 2048, NULL, 1, NULL, led_cpu);
+
+
 }
 
-void loop()
+void loop() 
 {
 }

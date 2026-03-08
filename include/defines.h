@@ -1,24 +1,28 @@
 #ifndef DEFINES_H
 #define DEFINES_H
 
-typedef struct gyro_data_s {
+typedef struct gyro_data_s
+{
     float x;
     float y;
     float z;
 } gyro_data_t;
 
-typedef struct dht_data_s {
+typedef struct dht_data_s
+{
     float temperature;
     float humidity;
 } dht_data_t;
 
-typedef struct accel_data_s {
+typedef struct accel_data_s
+{
     float x;
     float y;
     float z;
 } accel_data_t;
 
-typedef struct mq135_data_s {
+typedef struct mq135_data_s
+{
     float ppm;
     float voltage;
 } mq135_data_t;
@@ -52,8 +56,14 @@ typedef struct mq135_data_s {
 #define MOTOR2_IN1
 #define MOTOR2_IN2
 
+#define LED_PIN_1 LED_BUILTIN
+#define LED_PIN_2 12
+#define LED_PIN_3 14
+
+#define LED_RED 14
+
 void initialize_pins();
-void Buzz();
+void Buzz(uint8_t iter, uint16_t duration);
 accel_data_t ReadAccel();
 double ReadIMUTemp();
 gyro_data_t ReadGyro();
@@ -61,5 +71,7 @@ void InitializeIMU();
 void MQTT_INITIALIZE();
 void printPayload(char *topic, byte *message, unsigned int length);
 void callback(char *topic, byte *message, unsigned int length);
+void Pulsate(uint8_t pin, uint8_t iter, uint16_t duration);
+
 
 #endif
