@@ -109,7 +109,7 @@ void setup()
   MQTT_INITIALIZE();
 
 
-  // xTaskCreatePinnedToCore(test_servos, "Test Servos", 4096, NULL, 1, NULL, servo_cpu);
+  xTaskCreatePinnedToCore(test_servos, "Test Servos", 4096, NULL, 1, NULL, servo_cpu);
   xTaskCreatePinnedToCore(toggleLED1, "Toggle LED1", 2048, NULL, 1, NULL, led_cpu);
 
   // xTaskCreatePinnedToCore(toggleLED2, "Toggle LED2", 2048, NULL, 1, NULL, led_cpu);
