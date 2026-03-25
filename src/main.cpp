@@ -6,8 +6,9 @@
 
 Servo base, shoulder, elbow, gripper;
 
+
 static const BaseType_t servo_cpu = 1;
-static const BaseType_t led_cpu = 0;
+static const BaseType_t sensor_cpu = 0;
 
 void toggleLED1(void *ptr)
 {
@@ -17,30 +18,6 @@ void toggleLED1(void *ptr)
     vTaskDelay(500 / portTICK_PERIOD_MS);
     digitalWrite(LED_PIN_1, LOW);
     vTaskDelay(500 / portTICK_PERIOD_MS);
-  }
-  vTaskDelete(NULL);
-}
-
-void toggleLED2(void *ptr)
-{
-  while (1)
-  {
-    digitalWrite(LED_PIN_2, HIGH);
-    vTaskDelay(400 / portTICK_PERIOD_MS);
-    digitalWrite(LED_PIN_2, LOW);
-    vTaskDelay(400 / portTICK_PERIOD_MS);
-  }
-  vTaskDelete(NULL);
-}
-
-void toggleLED3(void *ptr)
-{
-  while (1)
-  {
-    digitalWrite(LED_PIN_3, HIGH);
-    vTaskDelay(400 / portTICK_PERIOD_MS);
-    digitalWrite(LED_PIN_3, LOW);
-    vTaskDelay(400 / portTICK_PERIOD_MS);
   }
   vTaskDelete(NULL);
 }
@@ -85,7 +62,7 @@ void test_servos(void *ptr)
 
 void setup()
 {
-  Serial.begin(115200);
+  Serial.begin(9600);
 
   ESP32PWM::allocateTimer(0);
   ESP32PWM::allocateTimer(1);
@@ -103,22 +80,24 @@ void setup()
   gripper.write(0);
   base.write(0);
 
-
   initialize_pins();
-  Pulsate(BUZZER_PIN, 2, 2500);
+  InitializeExpander();
+  Pulsate(BUZZER_PIN, 2, 500);
   MQTT_INITIALIZE();
+  InitializeDHT();
+  InitializeIMU();
 
 
   // xTaskCreatePinnedToCore(test_servos, "Test Servos", 4096, NULL, 1, NULL, servo_cpu);
-  xTaskCreatePinnedToCore(toggleLED1, "Toggle LED1", 2048, NULL, 1, NULL, led_cpu);
+  xTaskCreatePinnedToCore(toggleLED1, "LED Task", 2048, NULL, 1, NULL, sensor_cpu);
+  xTaskCreatePinnedToCore(SensorTask, "Sensor Task", 4096, NULL, 1, NULL, sensor_cpu);
 
-  // xTaskCreatePinnedToCore(toggleLED2, "Toggle LED2", 2048, NULL, 1, NULL, led_cpu);
-  // xTaskCreatePinnedToCore(toggleLED3, "Toggle LED3", 2048, NULL, 1, NULL, led_cpu);
-  // xTaskCreatePinnedToCore(toggleLED4, "Toggle LED4", 2048, NULL, 1, NULL, led_cpu);
+  // xTaskCreatePinnedToCore(toggleLED3, "Toggle LED3", 2048, NULL, 1, NULL, sensor_cpu);
+  // xTaskCreatePinnedToCore(toggleLED4, "Toggle LED4", 2048, NULL, 1, NULL, sensor_cpu);
 
 
 }
 
-void loop() 
+void loop()
 {
 }

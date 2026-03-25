@@ -13,12 +13,12 @@ void initialize_pins()
     // Ultrasonic sensor pins
     pinMode(HC_SR04_TRIG, OUTPUT);
     pinMode(HC_SR04_ECHO, INPUT);
+    digitalWrite(HC_SR04_TRIG, LOW);
 
     // DHT11 Pin
-    pinMode(DHT_PIN, INPUT);
-    pinMode(BUZZER_PIN, OUTPUT);
+
+    // pinMode(BUZZER_PIN, OUTPUT);
 
     pinMode(LED_PIN_1, OUTPUT);
-    pinMode(LED_PIN_2, OUTPUT);
-    pinMode(LED_PIN_3, OUTPUT);
 }
+

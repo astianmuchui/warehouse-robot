@@ -8,12 +8,13 @@ Adafruit_MPU6050 mpu;
 
 void InitializeIMU()
 {
+  Wire.begin(I2C_SDA, I2C_SCL);
   if (!mpu.begin())
   {
     Serial.println("Failed to find MPU6050 chip");
     while (1)
     {
-      delay(10);
+      vTaskDelay(10 / portTICK_PERIOD_MS);
     }
   }
 

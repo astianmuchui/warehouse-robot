@@ -2,8 +2,8 @@
 #include "PubSubClient.h"
 #include "defines.h"
 
-char ssid[] = "undeniable";
-char pass[] = "$ArcherOfHalcyon62";
+char ssid[] = "DXS";
+char pass[] = "$Codex2016@Phoenix-FR1507";
 
 const char *mqtt_broker = "hustlemania-home-1.local";
 const char *mqtt_username = "astian";
@@ -24,12 +24,12 @@ void MQTT_INITIALIZE()
     {
         delay(500);
         Serial.println("Connecting to WiFi..");
-    }
+    } 
 
     Serial.println("Connected to the Wi-Fi network");
 
     Pulsate(BUZZER_PIN, 2, 300);
-    Pulsate(LED_PIN_2, 2, 300);
+    PCF_Pulsate(PCF_P0, 2, 300);
 
     Serial.println("Before Connect MQTT");
     client.setServer(mqtt_broker, mqtt_port);
@@ -44,14 +44,14 @@ void MQTT_INITIALIZE()
         {
             Serial.println("Public MQTT broker connected");
             Pulsate(BUZZER_PIN, 4, 200);
-            Pulsate(LED_PIN_2, 4, 200);
+            PCF_Pulsate(PCF_P0, 4, 200);
         }
         else
         {
             Serial.print("failed with state ");
             Serial.print(client.state());
             Pulsate(BUZZER_PIN, 8, 100);
-            Pulsate(LED_PIN_3, 8, 100);
+            PCF_Pulsate(PCF_P1, 8, 100);
             delay(2000);
         }
     }
@@ -98,7 +98,7 @@ class RobotMQTT
             Serial.println("Connected to the Wi-Fi network");
 
             Pulsate(BUZZER_PIN, 2, 300);
-            Pulsate(LED_PIN_2, 2, 300);
+            PCF_Pulsate(PCF_P0, 2, 300);
 
             Serial.println("Before Connect MQTT");
             client.setServer(mqtt_broker, mqtt_port);
@@ -114,14 +114,14 @@ class RobotMQTT
                     mqtt_client = client;
                     Serial.println("Public MQTT broker connected");
                     Pulsate(BUZZER_PIN, 4, 200);
-                    Pulsate(LED_PIN_2, 4, 200);
+                    PCF_Pulsate(PCF_P0, 4, 200);
                 }
                 else
                 {
                     Serial.print("failed with state ");
                     Serial.print(client.state());
                     Pulsate(BUZZER_PIN, 8, 100);
-                    Pulsate(LED_PIN_3, 8, 100);
+                    PCF_Pulsate(PCF_P1, 8, 100);
                     delay(2000);
                 }
             }

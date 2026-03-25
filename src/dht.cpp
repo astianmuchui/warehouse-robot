@@ -2,14 +2,15 @@
 #include <DHT.h>
 #include "defines.h"
 
-DHT dht(DHT_PIN, DHT22);
+DHT dht(DHT_PIN, DHT11);
+
 
 void InitializeDHT()
 {
-  dht.begin();
+  return dht.begin();
 }
 
-dht_data_t *ReadDHT()
+dht_data_t ReadDHT()
 {
   float humidity = dht.readHumidity();
   float temperature = dht.readTemperature();
@@ -18,5 +19,5 @@ dht_data_t *ReadDHT()
   data.temperature = temperature;
   data.humidity = humidity;
 
-  return &data;
+  return data;
 }
