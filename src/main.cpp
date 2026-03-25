@@ -88,7 +88,6 @@ void setup()
   InitializeIMU();
 
 
-  // xTaskCreatePinnedToCore(test_servos, "Test Servos", 4096, NULL, 1, NULL, servo_cpu);
   xTaskCreatePinnedToCore(toggleLED1, "LED Task", 2048, NULL, 1, NULL, sensor_cpu);
   xTaskCreatePinnedToCore(SensorTask, "Sensor Task", 4096, NULL, 1, NULL, sensor_cpu);
 

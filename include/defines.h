@@ -56,10 +56,10 @@ typedef struct mq135_data_s
 #define HC_SR04_TRIG 12
 #define HC_SR04_ECHO 23
 
-#define BASE_SERVO 14
+#define BASE_SERVO 5
 #define SHOULDER_SERVO 27
 #define ELBOW_SERVO 19
-#define GRIPPER_SERVO 21
+#define GRIPPER_SERVO 18
 
 #define BUZZER_PIN 13
 
