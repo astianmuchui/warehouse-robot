@@ -5,13 +5,17 @@ HardwareSerial gpsSerial(2);
 
 void GPS_INIT()
 {
+    Serial.println("Initializing GPS .......");
     gpsSerial.begin(GPS_BAUD, SERIAL_8N1, RXD2, TXD2);
 }
 
-char READ_GPS()
+void READ_GPS()
 {
-    if (gpsSerial.available() <= 0)
-        return '\0';
+    unsigned long startTime = millis();
+    while (millis() - startTime < 10000 && gpsSerial.available() > 0)
+    {
 
-    return gpsSerial.read();
+        char gpsData = gpsSerial.read();
+        Serial.print(gpsData);
+    }
 }

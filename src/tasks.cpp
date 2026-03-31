@@ -33,8 +33,8 @@ void SensorTask(void *ptr)
 
         vTaskDelay(500 / portTICK_PERIOD_MS);
 
-        gps_data = READ_GPS();
-        Serial.printf("gps data: %c\n", gps_data);
+        READ_GPS();
+
         vTaskDelay(1500 / portTICK_PERIOD_MS);
 
     }

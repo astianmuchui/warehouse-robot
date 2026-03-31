@@ -107,7 +107,7 @@ void callback(char *topic, byte *message, unsigned int length);
 void Pulsate(uint8_t pin, uint8_t iter, uint16_t duration);
 
 void GPS_INIT();
-char READ_GPS();
+void READ_GPS();
 mq135_data_t ReadMQ135();
 
 #endif
