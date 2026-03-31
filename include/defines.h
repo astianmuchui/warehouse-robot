@@ -61,7 +61,12 @@ typedef struct mq135_data_s
 #define ELBOW_SERVO 19
 #define GRIPPER_SERVO 18
 
-#define BUZZER_PIN 13
+#define BUZZER_PIN 25
+
+#define RXD2 16
+#define TXD2 17
+
+#define GPS_BAUD 9600
 
 #define ENABLE_PIN_1
 #define ENABLE_PIN_2
@@ -76,7 +81,6 @@ typedef struct mq135_data_s
 #define LED_PIN_2 32
 #define LED_PIN_3 33
 
-#define LED_RED 25
 
 void initialize_pins();
 void Buzz(uint8_t iter, uint16_t duration);
@@ -101,5 +105,9 @@ void PCF_Pulsate(uint8_t pcf_pin, uint8_t iter, uint16_t duration);
 void printPayload(char *topic, byte *message, unsigned int length);
 void callback(char *topic, byte *message, unsigned int length);
 void Pulsate(uint8_t pin, uint8_t iter, uint16_t duration);
+
+void GPS_INIT();
+char READ_GPS();
+mq135_data_t ReadMQ135();
 
 #endif

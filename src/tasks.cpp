@@ -7,7 +7,9 @@ void SensorTask(void *ptr)
     {
         dht_data_t dht_data;
         accel_data_t accel_data;
-        gyro_data_t gyro_data ;
+        gyro_data_t gyro_data;
+        char gps_data;
+
 
         Serial.println("Reading DHT11");
         dht_data = ReadDHT();
@@ -29,6 +31,10 @@ void SensorTask(void *ptr)
         else
             Serial.printf("ultrasonic: %.2f cm\n", distance);
 
+        vTaskDelay(500 / portTICK_PERIOD_MS);
+
+        gps_data = READ_GPS();
+        Serial.printf("gps data: %c\n", gps_data);
         vTaskDelay(1500 / portTICK_PERIOD_MS);
 
     }

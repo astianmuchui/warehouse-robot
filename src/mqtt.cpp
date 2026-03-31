@@ -24,12 +24,12 @@ void MQTT_INITIALIZE()
     {
         delay(500);
         Serial.println("Connecting to WiFi..");
-    } 
+    }
 
     Serial.println("Connected to the Wi-Fi network");
 
-    Pulsate(BUZZER_PIN, 2, 300);
-    PCF_Pulsate(PCF_P0, 2, 300);
+    PCF_Pulsate(BUZZER_PIN, 2, 500);
+    PCF_Pulsate(PCF_P0, 2, 500);
 
     Serial.println("Before Connect MQTT");
     client.setServer(mqtt_broker, mqtt_port);
@@ -50,8 +50,8 @@ void MQTT_INITIALIZE()
         {
             Serial.print("failed with state ");
             Serial.print(client.state());
-            Pulsate(BUZZER_PIN, 8, 100);
-            PCF_Pulsate(PCF_P1, 8, 100);
+            PCF_Pulsate(BUZZER_PIN, 8, 100);
+            PCF_Pulsate(BUZZER_PIN, 8, 100);
             delay(2000);
         }
     }
@@ -121,7 +121,7 @@ class RobotMQTT
                     Serial.print("failed with state ");
                     Serial.print(client.state());
                     Pulsate(BUZZER_PIN, 8, 100);
-                    PCF_Pulsate(PCF_P1, 8, 100);
+                    PCF_Pulsate(BUZZER_PIN, 8, 100);
                     delay(2000);
                 }
             }

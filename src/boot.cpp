@@ -20,5 +20,7 @@ void initialize_pins()
     // pinMode(BUZZER_PIN, OUTPUT);
 
     pinMode(LED_PIN_1, OUTPUT);
+    pinMode(BUZZER_PIN, OUTPUT);
+    GPS_INIT();
 }
 

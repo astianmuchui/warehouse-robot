@@ -1,7 +1,7 @@
 #include <Arduino.h>
 #include "defines.h"
 
-mq135_data_t *ReadMQ135()
+mq135_data_t ReadMQ135()
 {
     float air_quality = analogRead(MQ_PIN);
     float voltage = air_quality * (5.0 / 1023.0);
@@ -12,6 +12,6 @@ mq135_data_t *ReadMQ135()
     data.ppm = ppm;
     data.voltage = voltage;
 
-    return &data;
+    return data;
 }
 
