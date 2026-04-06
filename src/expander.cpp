@@ -33,6 +33,14 @@ void InitializeExpander()
         Serial.println("PCF8574 not found - check PCF_ADDR");
     }
 
+    digitalWrite(P0, LOW);
+    digitalWrite(P1, LOW);
+    digitalWrite(P2, LOW);
+    digitalWrite(P3, LOW);
+    digitalWrite(P4, LOW);
+    digitalWrite(P5, LOW);
+    digitalWrite(P6, LOW);
+    digitalWrite(P7, LOW);
 }
 
 void PCF_Pulsate(uint8_t pcf_pin, uint8_t iter, uint16_t duration)

@@ -8,7 +8,7 @@ void SensorTask(void *ptr)
         dht_data_t dht_data;
         accel_data_t accel_data;
         gyro_data_t gyro_data;
-        char gps_data;
+        gps_data_t gps_data;
 
 
         Serial.println("Reading DHT11");
@@ -33,7 +33,13 @@ void SensorTask(void *ptr)
 
         vTaskDelay(500 / portTICK_PERIOD_MS);
 
-        READ_GPS();
+        gps_data = READ_GPS();
+        if (gps_data.valid)
+            Serial.printf("gps data: lat=%.6f lng=%.6f alt=%.2fm spd=%.2fkm/h sats=%u\n",
+                          gps_data.latitude, gps_data.longitude,
+                          gps_data.altitude, gps_data.speed, gps_data.satellites);
+        else
+            Serial.println("gps data: no fix");
 
         vTaskDelay(1500 / portTICK_PERIOD_MS);
 

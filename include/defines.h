@@ -106,8 +106,18 @@ void printPayload(char *topic, byte *message, unsigned int length);
 void callback(char *topic, byte *message, unsigned int length);
 void Pulsate(uint8_t pin, uint8_t iter, uint16_t duration);
 
+typedef struct gps_data_s
+{
+    double latitude;
+    double longitude;
+    double altitude;
+    double speed;
+    uint32_t satellites;
+    bool valid;
+} gps_data_t;
+
 void GPS_INIT();
-void READ_GPS();
+gps_data_t READ_GPS();
 mq135_data_t ReadMQ135();
 
 #endif

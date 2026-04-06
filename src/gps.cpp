@@ -1,7 +1,9 @@
 #include <Arduino.h>
 #include "defines.h"
+#include <TinyGPS++.h>
 
 HardwareSerial gpsSerial(2);
+TinyGPSPlus gps;
 
 void GPS_INIT()
 {
@@ -9,13 +11,17 @@ void GPS_INIT()
     gpsSerial.begin(GPS_BAUD, SERIAL_8N1, RXD2, TXD2);
 }
 
-void READ_GPS()
+gps_data_t READ_GPS()
 {
-    unsigned long startTime = millis();
-    while (millis() - startTime < 10000 && gpsSerial.available() > 0)
-    {
+    while (gpsSerial.available() > 0)
+        gps.encode(gpsSerial.read());
 
-        char gpsData = gpsSerial.read();
-        Serial.print(gpsData);
-    }
+    gps_data_t data = {};
+    data.valid      = gps.location.isValid();
+    data.latitude   = gps.location.lat();
+    data.longitude  = gps.location.lng();
+    data.altitude   = gps.altitude.meters();
+    data.speed      = gps.speed.kmph();
+    data.satellites = gps.satellites.value();
+    return data;
 }
