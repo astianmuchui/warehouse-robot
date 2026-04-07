@@ -37,7 +37,7 @@ All topics are rooted under `robot/devices/<DEVICE_ID>/`.
 | `robot/devices/{id}/events/zero_motion` | Publish | Immediate | Robot became stationary |
 | `robot/cmd` | Subscribe | Cloud -> device | Command dispatch |
 
-`DEVICE_ID` is `IRK17352YV2026` (defined in `include/defines.h`).
+`DEVICE_ID` is `WRBT202642` (defined in `include/defines.h`).
 
 ---
 
@@ -51,7 +51,7 @@ version, and network details.
 
 ```json
 {
-  "device_id":  "IRK17352YV2026",
+  "device_id":  "WRBT202642",
   "event":      "boot",
   "timestamp":  1712500000,
   "firmware":   "1.0.0",
@@ -75,7 +75,7 @@ Published every 30 seconds. Contains the latest reading from every sensor.
 
 ```json
 {
-  "device_id": "IRK17352YV2026",
+  "device_id": "WRBT202642",
   "timestamp": 1712500030,
   "uptime_s":  30,
 
@@ -138,7 +138,7 @@ Published alongside each `/readings` message. Lightweight liveness check.
 
 ```json
 {
-  "device_id": "IRK17352YV2026",
+  "device_id": "WRBT202642",
   "timestamp": 1712500030,
   "uptime_s":  30,
   "rssi":      -52
@@ -154,7 +154,7 @@ interrupt** — indicates collision or sharp direction change.
 
 ```json
 {
-  "device_id": "IRK17352YV2026",
+  "device_id": "WRBT202642",
   "event":     "motion",
   "timestamp": 1712500045,
   "uptime_s":  45,
@@ -174,7 +174,7 @@ dropped or launched.
 
 ```json
 {
-  "device_id": "IRK17352YV2026",
+  "device_id": "WRBT202642",
   "event":     "freefall",
   "timestamp": 1712500060,
   "uptime_s":  60,
@@ -193,7 +193,7 @@ zero-motion threshold for the configured duration).
 
 ```json
 {
-  "device_id": "IRK17352YV2026",
+  "device_id": "WRBT202642",
   "event":     "zero_motion",
   "timestamp": 1712500120,
   "uptime_s":  120,

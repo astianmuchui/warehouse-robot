@@ -111,15 +111,15 @@ typedef struct {
 #define GSM_APN    "safaricom"
 
 
-#define WIFI_SSID     "DXS"
-#define WIFI_PASSWORD "$Codex2016@Phoenix-FR1507"
+#define WIFI_SSID     ""
+#define WIFI_PASSWORD ""
 
 
-#define MQTT_BROKER    "hustlemania-home-1.local"
+#define MQTT_BROKER    ""
 #define MQTT_PORT      1883
-#define MQTT_USER      "astian"
-#define MQTT_PASS      "muchui"
-#define DEVICE_ID      "IRK17352YV2026"
+#define MQTT_USER      ""
+#define MQTT_PASS      ""
+#define DEVICE_ID      "WRBT202642"
 #define MQTT_CLIENT_ID DEVICE_ID
 
 #define PUBLISH_INTERVAL_MS 30000  /* 30 s periodic readings + heartbeat */
