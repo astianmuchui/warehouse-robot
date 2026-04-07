@@ -11,10 +11,18 @@ void GPS_INIT()
     gpsSerial.begin(GPS_BAUD, SERIAL_8N1, RXD2, TXD2);
 }
 
-gps_data_t READ_GPS()
+
+
+
+void GPS_DRAIN()
 {
     while (gpsSerial.available() > 0)
         gps.encode(gpsSerial.read());
+}
+
+gps_data_t READ_GPS()
+{
+    GPS_DRAIN();
 
     gps_data_t data = {};
     data.valid      = gps.location.isValid();

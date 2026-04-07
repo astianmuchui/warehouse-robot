@@ -1,47 +1,143 @@
+
+
 #include <Arduino.h>
+#include <time.h>
+#include <math.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <freertos/timers.h>
+#include <freertos/semphr.h>
+
 #include "defines.h"
 
-void SensorTask(void *ptr)
+static SemaphoreHandle_t s_dht_sem;
+static SemaphoreHandle_t s_imu_sem;
+static SemaphoreHandle_t s_sonic_sem;
+static SemaphoreHandle_t s_mq135_sem;
+static SemaphoreHandle_t s_gps_sem;
+
+static void dht_timer_cb(TimerHandle_t) { xSemaphoreGive(s_dht_sem); }
+static void imu_timer_cb(TimerHandle_t) { xSemaphoreGive(s_imu_sem); }
+static void sonic_timer_cb(TimerHandle_t) { xSemaphoreGive(s_sonic_sem); }
+static void mq135_timer_cb(TimerHandle_t) { xSemaphoreGive(s_mq135_sem); }
+static void gps_timer_cb(TimerHandle_t) { xSemaphoreGive(s_gps_sem); }
+
+void init_sensor_timers()
 {
-    while (1)
+    s_dht_sem = xSemaphoreCreateBinary();
+    s_imu_sem = xSemaphoreCreateBinary();
+    s_sonic_sem = xSemaphoreCreateBinary();
+    s_mq135_sem = xSemaphoreCreateBinary();
+    s_gps_sem = xSemaphoreCreateBinary();
+
+    xTimerStart(xTimerCreate("dht", pdMS_TO_TICKS(2000), pdTRUE, NULL, dht_timer_cb), 0);
+    xTimerStart(xTimerCreate("imu", pdMS_TO_TICKS(500), pdTRUE, NULL, imu_timer_cb), 0);
+    xTimerStart(xTimerCreate("sonic", pdMS_TO_TICKS(1000), pdTRUE, NULL, sonic_timer_cb), 0);
+    xTimerStart(xTimerCreate("mq135", pdMS_TO_TICKS(2000), pdTRUE, NULL, mq135_timer_cb), 0);
+    xTimerStart(xTimerCreate("gps", pdMS_TO_TICKS(1000), pdTRUE, NULL, gps_timer_cb), 0);
+}
+
+void dht_task(void *)
+{
+    while (true)
     {
-        dht_data_t dht_data;
-        accel_data_t accel_data;
-        gyro_data_t gyro_data;
-        gps_data_t gps_data;
+        xSemaphoreTake(s_dht_sem, portMAX_DELAY);
 
-
-        Serial.println("Reading DHT11");
-        dht_data = ReadDHT();
-
-        Serial.printf("dht data: temp=%.2f humidity=%.2f\n", dht_data.temperature, dht_data.humidity);
-
-        vTaskDelay(1500 / portTICK_PERIOD_MS);
-
-        Serial.println("Reading IMU");
-        gyro_data = ReadGyro();
-        accel_data = ReadAccel();
-
-        Serial.printf("accel data: x=%.2f y=%.2f z=%.2f\n", accel_data.x, accel_data.y, accel_data.z);
-        Serial.printf("gyro data: x=%.2f y=%.2f z=%.2f\n", gyro_data.x, gyro_data.y, gyro_data.z);
-
-        float distance = ReadUltrasonic();
-        if (distance < 0)
-            Serial.println("ultrasonic: timeout");
+        dht_data_t d = ReadDHT();
+        if (!isnan(d.temperature) && !isnan(d.humidity))
+        {
+            xQueueOverwrite(g_dht_queue, &d);
+            Serial.printf("[DHT] %.1f°C  %.1f %%RH\n", d.temperature, d.humidity);
+        }
         else
-            Serial.printf("ultrasonic: %.2f cm\n", distance);
+        {
+            Serial.println("[DHT] Read failed (NaN) — sensor not ready?");
+        }
+    }
+}
 
-        vTaskDelay(500 / portTICK_PERIOD_MS);
+void imu_task(void *)
+{
+    while (true)
+    {
+        xSemaphoreTake(s_imu_sem, portMAX_DELAY);
 
-        gps_data = READ_GPS();
-        if (gps_data.valid)
-            Serial.printf("gps data: lat=%.6f lng=%.6f alt=%.2fm spd=%.2fkm/h sats=%u\n",
-                          gps_data.latitude, gps_data.longitude,
-                          gps_data.altitude, gps_data.speed, gps_data.satellites);
+        imu_reading_t r = ReadIMU();
+        xQueueOverwrite(g_imu_queue, &r);
+
+        Serial.printf("[IMU] A(%.2f, %.2f, %.2f) m/s²  G(%.3f, %.3f, %.3f) rad/s  %.1f°C\n",
+                      r.accel.x, r.accel.y, r.accel.z,
+                      r.gyro.x, r.gyro.y, r.gyro.z,
+                      r.temperature);
+
+        imu_event_type_t ev_type = CheckIMUEvents();
+        if (ev_type != IMU_EVENT_NONE)
+        {
+            imu_event_t ev;
+            ev.type = ev_type;
+            ev.timestamp_s = (uint32_t)time(nullptr);
+            ev.uptime_s = millis() / 1000;
+            ev.accel_x = r.accel.x;
+            ev.accel_y = r.accel.y;
+            ev.accel_z = r.accel.z;
+
+            if (xQueueSend(g_event_queue, &ev, 0) == pdTRUE)
+                Serial.printf("[IMU] Event type %d queued\n", (int)ev_type);
+            else
+                Serial.println("[IMU] Event queue full — event dropped");
+        }
+    }
+}
+
+void ultrasonic_task(void *)
+{
+    while (true)
+    {
+        xSemaphoreTake(s_sonic_sem, portMAX_DELAY);
+
+        float dist = ReadUltrasonic();
+        xQueueOverwrite(g_sonic_queue, &dist);
+
+        if (dist > 0.0f)
+            Serial.printf("[US] %.1f cm\n", dist);
         else
-            Serial.println("gps data: no fix");
+            Serial.println("[US] No echo (out of range or timeout)");
+    }
+}
 
-        vTaskDelay(1500 / portTICK_PERIOD_MS);
+void mq135_task(void *)
+{
+    while (true)
+    {
+        xSemaphoreTake(s_mq135_sem, portMAX_DELAY);
 
+        mq135_data_t d = ReadMQ135();
+        xQueueOverwrite(g_mq135_queue, &d);
+
+        Serial.printf("[MQ135] %.1f ppm  (%.3f V)\n", d.ppm, d.voltage);
+    }
+}
+
+void gps_task(void *)
+{
+    while (true)
+    {
+
+        BaseType_t tick = xSemaphoreTake(s_gps_sem, pdMS_TO_TICKS(100));
+
+        GPS_DRAIN();
+
+        if (tick == pdTRUE)
+        {
+            gps_data_t d = READ_GPS();
+            xQueueOverwrite(g_gps_queue, &d);
+
+            if (d.valid)
+                Serial.printf("[GPS] %.6f, %.6f  alt=%.1f m  %.1f km/h  sats=%u\n",
+                              d.latitude, d.longitude,
+                              d.altitude, d.speed, d.satellites);
+            else
+                Serial.println("[GPS] Waiting for fix...");
+        }
     }
 }
