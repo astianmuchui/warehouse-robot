@@ -6,19 +6,19 @@
 
 Adafruit_MPU6050 mpu;
 
-// ─── MPU6050 Register Map (advanced interrupt features) ──────────────────────
-// The Adafruit library does not expose free-fall or zero-motion detection, so
-// we write the relevant registers directly via Wire after mpu.begin().
+
+
+
 #define MPU6050_ADDR        0x68
-#define MPU6050_FF_THR      0x1D   // Free-fall threshold (1 LSB = ~1 mg)
-#define MPU6050_FF_DUR      0x1E   // Free-fall duration  (1 LSB = 1 ms)
-#define MPU6050_MOT_THR     0x1F   // Motion threshold    (1 LSB = 32 mg @ ±2g)
-#define MPU6050_MOT_DUR     0x20   // Motion duration     (1 LSB = 1 ms)
-#define MPU6050_ZRMOT_THR   0x21   // Zero-motion threshold
-#define MPU6050_ZRMOT_DUR   0x22   // Zero-motion duration
-#define MPU6050_INT_PIN_CFG 0x37   // Interrupt pin config
-#define MPU6050_INT_ENABLE  0x38   // Interrupt enable mask
-#define MPU6050_INT_STATUS  0x3A   // Interrupt status — reading this clears all flags
+#define MPU6050_FF_THR      0x1D   
+#define MPU6050_FF_DUR      0x1E   
+#define MPU6050_MOT_THR     0x1F   
+#define MPU6050_MOT_DUR     0x20   
+#define MPU6050_ZRMOT_THR   0x21   
+#define MPU6050_ZRMOT_DUR   0x22   
+#define MPU6050_INT_PIN_CFG 0x37   
+#define MPU6050_INT_ENABLE  0x38   
+#define MPU6050_INT_STATUS  0x3A   
 
 static void writeReg(uint8_t reg, uint8_t val)
 {
@@ -37,7 +37,7 @@ static uint8_t readReg(uint8_t reg)
     return Wire.available() ? Wire.read() : 0;
 }
 
-// ─── InitializeIMU ────────────────────────────────────────────────────────────
+
 void InitializeIMU()
 {
     Wire.begin(I2C_SDA, I2C_SCL);
@@ -51,22 +51,22 @@ void InitializeIMU()
     mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
 }
 
-// ─── ConfigureIMUEvents ───────────────────────────────────────────────────────
-// Must be called AFTER InitializeIMU(). Configures three interrupt sources:
-//
-//  Motion / collision
-//    MOT_THR = 5  → 5 × 32 mg = 160 mg threshold (lower = more sensitive)
-//    MOT_DUR = 1  → must exceed threshold for 1 ms
-//
-//  Free-fall (drop / launch)
-//    FF_THR  = 17 → 17 mg (total-accel must be BELOW this for FF_DUR)
-//    FF_DUR  = 100 → 100 consecutive ms to confirm free-fall
-//
-//  Zero-motion (robot parked / stationary)
-//    ZRMOT_THR = 4, ZRMOT_DUR = 4
-//
-// INT_STATUS (0x3A) is READ-CLEAR: a single readReg() call atomically reads and
-// clears all flags, so CheckIMUEvents() is safe to call from the IMU task loop.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 void ConfigureIMUEvents()
 {
     writeReg(MPU6050_MOT_THR,   5);
@@ -78,18 +78,18 @@ void ConfigureIMUEvents()
     writeReg(MPU6050_ZRMOT_THR, 4);
     writeReg(MPU6050_ZRMOT_DUR, 4);
 
-    // INT pin: active-high, push-pull, 50 µs pulse, read-clear on status read
+    
     writeReg(MPU6050_INT_PIN_CFG, 0x00);
 
-    // Enable: FF (bit7) | MOT (bit6) | ZMOT (bit5)
+    
     writeReg(MPU6050_INT_ENABLE, (1 << 7) | (1 << 6) | (1 << 5));
 
     Serial.println("[IMU] Motion / freefall / zero-motion detection armed");
 }
 
-// ─── CheckIMUEvents ───────────────────────────────────────────────────────────
-// Polls INT_STATUS and returns the highest-priority pending event (or NONE).
-// Reading INT_STATUS clears all flags atomically (no separate clear needed).
+
+
+
 imu_event_type_t CheckIMUEvents()
 {
     uint8_t status = readReg(MPU6050_INT_STATUS);
@@ -99,9 +99,9 @@ imu_event_type_t CheckIMUEvents()
     return IMU_EVENT_NONE;
 }
 
-// ─── ReadIMU ─────────────────────────────────────────────────────────────────
-// Single getEvent() call populates accel, gyro, and die temperature together.
-// Prefer this over calling ReadAccel() + ReadGyro() + ReadIMUTemp() separately.
+
+
+
 imu_reading_t ReadIMU()
 {
     sensors_event_t a, g, temp;
@@ -118,7 +118,7 @@ imu_reading_t ReadIMU()
     return r;
 }
 
-// ─── Legacy single-field accessors (kept for compatibility) ──────────────────
+
 accel_data_t ReadAccel()
 {
     sensors_event_t a, g, temp;
