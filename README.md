@@ -21,14 +21,6 @@ MQTT broker using a FreeRTOS queue-based architecture.
 **LEDs**: GPIO 2 (built-in) · GPIO 32 · GPIO 33 · PCF8574 P0/P1
 **Buzzer**: GPIO 25
 
-> **I2C pin note** — The original schematic routed I2C to GPIO 16/17, which
-> conflicts with GPS UART2 (also 16/17). I2C has been moved to the standard
-> ESP32 pins **SDA = 21, SCL = 22**. Re-wire the MPU6050 and PCF8574
-> accordingly.
-> **ADC2 note** — MQ-135 is on GPIO 4 (ADC2). ADC2 shares silicon with the
-> WiFi radio; readings may be noisy while WiFi is active. If values drift,
-> move the sensor to an ADC1 pin (GPIO 32-35).
-
 ---
 
 ## MQTT Topic Strategy
