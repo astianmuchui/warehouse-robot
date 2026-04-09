@@ -51,4 +51,5 @@ void PCF_Pulsate(uint8_t pcf_pin, uint8_t iter, uint16_t duration)
         pcf8574.digitalWrite(pcf_pin, LOW);
         delay(duration);
     }
+    pcf8574.digitalWrite(pcf_pin, LOW);
 }

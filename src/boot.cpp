@@ -13,6 +13,7 @@ void initialize_pins()
 
     pinMode(HC_SR04_TRIG, OUTPUT);
     pinMode(HC_SR04_ECHO, INPUT);
+    pinMode(MQ_PIN, INPUT);
     digitalWrite(HC_SR04_TRIG, LOW);
 
     pinMode(LED_PIN_1, OUTPUT);

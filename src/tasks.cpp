@@ -53,6 +53,7 @@ void dht_task(void *)
         {
             Serial.println("[DHT] Read failed (NaN) — sensor not ready?");
         }
+        vTaskDelay(PUBLISH_INTERVAL_MS * 0.5 / portTICK_PERIOD_MS);
     }
 }
 
@@ -86,6 +87,7 @@ void imu_task(void *)
             else
                 Serial.println("[IMU] Event queue full — event dropped");
         }
+        vTaskDelay(PUBLISH_INTERVAL_MS * 0.5 / portTICK_PERIOD_MS);
     }
 }
 
@@ -102,11 +104,17 @@ void ultrasonic_task(void *)
             Serial.printf("[US] %.1f cm\n", dist);
         else
             Serial.println("[US] No echo (out of range or timeout)");
+
+        vTaskDelay(PUBLISH_INTERVAL_MS * 0.5 / portTICK_PERIOD_MS);
     }
 }
 
 void mq135_task(void *)
 {
+    Serial.println("[MQ135] Warm-up: waiting 2 minutes before first read...");
+    vTaskDelay(pdMS_TO_TICKS(120000));
+    Serial.println("[MQ135] Warm-up complete");
+
     while (true)
     {
         xSemaphoreTake(s_mq135_sem, portMAX_DELAY);
@@ -115,6 +123,7 @@ void mq135_task(void *)
         xQueueOverwrite(g_mq135_queue, &d);
 
         Serial.printf("[MQ135] %.1f ppm  (%.3f V)\n", d.ppm, d.voltage);
+        vTaskDelay(PUBLISH_INTERVAL_MS * 0.5 / portTICK_PERIOD_MS);
     }
 }
 
@@ -138,6 +147,8 @@ void gps_task(void *)
                               d.altitude, d.speed, d.satellites);
             else
                 Serial.println("[GPS] Waiting for fix...");
+
+            vTaskDelay(PUBLISH_INTERVAL_MS * 0.5 / portTICK_PERIOD_MS);
         }
     }
 }

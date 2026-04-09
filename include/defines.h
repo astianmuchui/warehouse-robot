@@ -70,7 +70,7 @@ typedef struct {
 
 
 
-#define MQ_PIN 4
+#define MQ_PIN 35
 
 
 #define DHT_PIN 15
@@ -111,18 +111,18 @@ typedef struct {
 #define GSM_APN    "safaricom"
 
 
-#define WIFI_SSID     ""
-#define WIFI_PASSWORD ""
+#define WIFI_SSID     "DXS"
+#define WIFI_PASSWORD "$Codex2016@Phoenix-FR1507"
 
 
-#define MQTT_BROKER    ""
+#define MQTT_BROKER    "hustlemania-home-1.local"
 #define MQTT_PORT      1883
-#define MQTT_USER      ""
-#define MQTT_PASS      ""
+#define MQTT_USER      "astian"
+#define MQTT_PASS      "muchui"
 #define DEVICE_ID      "WRBT202642"
 #define MQTT_CLIENT_ID DEVICE_ID
 
-#define PUBLISH_INTERVAL_MS 30000  /* 30 s periodic readings + heartbeat */
+#define PUBLISH_INTERVAL_MS 10000  /* 10 s periodic readings + heartbeat */
 
 
 #define TOPIC_BASE              "robot/devices/" DEVICE_ID
