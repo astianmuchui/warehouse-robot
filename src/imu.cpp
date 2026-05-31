@@ -5,8 +5,9 @@
 #include "defines.h"
 
 Adafruit_MPU6050 mpu;
+static bool s_imu_present = false;
 
-
+bool is_imu_detected() { return s_imu_present; }
 
 
 #define MPU6050_ADDR        0x68
@@ -42,9 +43,11 @@ void InitializeIMU()
 {
     Wire.begin(I2C_SDA, I2C_SCL);
     if (!mpu.begin()) {
-        Serial.println("[IMU] MPU6050 not found — check wiring (SDA=21, SCL=22)");
-        while (1) vTaskDelay(pdMS_TO_TICKS(100));
+        Serial.println("[IMU] MPU6050 not found — robot will run without IMU");
+        s_imu_present = false;
+        return;
     }
+    s_imu_present = true;
     Serial.println("[IMU] MPU6050 OK");
     mpu.setAccelerometerRange(MPU6050_RANGE_8_G);
     mpu.setGyroRange(MPU6050_RANGE_500_DEG);
@@ -52,23 +55,10 @@ void InitializeIMU()
 }
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 void ConfigureIMUEvents()
 {
+    if (!s_imu_present) return;
+
     writeReg(MPU6050_MOT_THR,   5);
     writeReg(MPU6050_MOT_DUR,   1);
 
@@ -92,6 +82,7 @@ void ConfigureIMUEvents()
 
 imu_event_type_t CheckIMUEvents()
 {
+    if (!s_imu_present) return IMU_EVENT_NONE;
     uint8_t status = readReg(MPU6050_INT_STATUS);
     if (status & (1 << 7)) return IMU_EVENT_FREEFALL;
     if (status & (1 << 6)) return IMU_EVENT_MOTION;
@@ -104,10 +95,13 @@ imu_event_type_t CheckIMUEvents()
 
 imu_reading_t ReadIMU()
 {
+    imu_reading_t r = {};
+    if (!s_imu_present) return r;
+
     sensors_event_t a, g, temp;
     mpu.getEvent(&a, &g, &temp);
 
-    imu_reading_t r;
+
     r.accel.x    = a.acceleration.x;
     r.accel.y    = a.acceleration.y;
     r.accel.z    = a.acceleration.z;
@@ -121,9 +115,10 @@ imu_reading_t ReadIMU()
 
 accel_data_t ReadAccel()
 {
+    accel_data_t d = {};
+    if (!s_imu_present) return d;
     sensors_event_t a, g, temp;
     mpu.getEvent(&a, &g, &temp);
-    accel_data_t d;
     d.x = a.acceleration.x;
     d.y = a.acceleration.y;
     d.z = a.acceleration.z;
@@ -132,9 +127,10 @@ accel_data_t ReadAccel()
 
 gyro_data_t ReadGyro()
 {
+    gyro_data_t d = {};
+    if (!s_imu_present) return d;
     sensors_event_t a, g, temp;
     mpu.getEvent(&a, &g, &temp);
-    gyro_data_t d;
     d.x = g.gyro.x;
     d.y = g.gyro.y;
     d.z = g.gyro.z;
@@ -143,6 +139,7 @@ gyro_data_t ReadGyro()
 
 double ReadIMUTemp()
 {
+    if (!s_imu_present) return 0.0;
     sensors_event_t a, g, temp;
     mpu.getEvent(&a, &g, &temp);
     return temp.temperature;
