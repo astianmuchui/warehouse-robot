@@ -1,19 +1,42 @@
 #include <Arduino.h>
+#include <Wire.h>
 #include <Adafruit_PWMServoDriver.h>
 #include <math.h>
 #include "defines.h"
 
 static Adafruit_PWMServoDriver pca9685(PCA9685_ADDR);
 
-/* Last commanded angle per servo channel.  Seeded to 90° so the first
-   interpolated move starts from the parked pose instead of jumping. */
-static uint8_t s_last_angle[4] = { 90, 90, 90, 90 };
+/* Last commanded angle, indexed by PCA9685 channel (0–15).  The arm servos now
+   live on channels 12–15, so this must be sized to the full channel count — a
+   4-element array indexed by channel 12+ would be an out-of-bounds write.
+   Seeded to 90° so the first interpolated move starts from the parked pose. */
+static uint8_t s_last_angle[16] = {
+    90, 90, 90, 90, 90, 90, 90, 90,
+    90, 90, 90, 90, 90, 90, 90, 90,
+};
+
+/* True for the four arm-servo channels (12–15), which get angle tracking and
+   smooth interpolation; other channels (e.g. motor enables) do not. */
+static inline bool is_servo_channel(uint8_t ch)
+{
+    return ch == SERVO_CH_GRIPPER  || ch == SERVO_CH_SHOULDER ||
+           ch == SERVO_CH_ELBOW    || ch == SERVO_CH_BASE;
+}
 
 void InitServoDriver()
 {
     pca9685.begin();
     pca9685.setPWMFreq(PCA_PWM_FREQ);
     delay(10);
+
+    /* Adafruit's begin() returns void, so verify the chip actually ACKs on the
+       bus. If this fails, no servo or motor will ever move — surface it loudly
+       rather than silently driving a chip that isn't there. */
+    Wire.beginTransmission(PCA9685_ADDR);
+    if (Wire.endTransmission() == 0)
+        Serial.printf("[Servo] PCA9685 ACK at 0x%02X\n", PCA9685_ADDR);
+    else
+        Serial.printf("[Servo] PCA9685 NOT responding at 0x%02X — nothing will move!\n", PCA9685_ADDR);
 
     /* Zero the motor enable channels so wheels don't spin on boot */
     MotorSetDuty(0);
@@ -40,7 +63,7 @@ void SetServoAngle(uint8_t channel, uint8_t angle)
     angle = constrain(angle, 0, 180);
     uint16_t pulse = map(angle, 0, 180, SERVO_PULSE_MIN, SERVO_PULSE_MAX);
     pca9685.setPWM(channel, 0, pulse);
-    if (channel < 4)
+    if (channel < 16)
         s_last_angle[channel] = angle;
 }
 
@@ -59,7 +82,7 @@ void DisableServo(uint8_t channel)
  * ──────────────────────────────────────────────────────────────────────────── */
 void MoveServoSmooth(uint8_t channel, uint8_t target)
 {
-    if (channel >= 4) { SetServoAngle(channel, target); return; }
+    if (!is_servo_channel(channel)) { SetServoAngle(channel, target); return; }
 
     target = constrain(target, 0, 180);
     int from = s_last_angle[channel];
@@ -75,41 +98,105 @@ void MoveServoSmooth(uint8_t channel, uint8_t target)
 
 /* ── Raw PCA9685 PWM helper ────────────────────────────────────────────────── */
 
-/* Set any PCA9685 channel to an arbitrary 12-bit on-count (0–4095).
-   on=0 means always-off; on=4096 means always-on. */
+/* Set any PCA9685 channel to a 12-bit duty (0–4095 ticks active out of 4096).
+   Use setPin() rather than setPWM(ch,0,count): setPin() applies the PCA9685's
+   special full-on (4096) / full-off bits at the 0 and 4095 endpoints, so an
+   L298N enable/IN line driven to 4095 is a clean steady HIGH instead of a
+   pulse with a one-tick dropout every cycle. */
 void SetPCAPwm(uint8_t channel, uint16_t on_count)
 {
     on_count = (on_count > PCA_PWM_MAX) ? PCA_PWM_MAX : on_count;
-    pca9685.setPWM(channel, 0, on_count);
+    pca9685.setPin(channel, on_count);
 }
 
-/* ── Motor speed control via PCA9685 ───────────────────────────────────────── */
-
-/* Set both motor enable channels (ENA = ch14, ENB = ch15) to the same duty.
-   duty_pct is 0–100; anything > 100 is clamped.
-   MOTOR_SPEED_MIN (35 %) is the stall threshold — below that both channels
-   are zeroed to avoid motor growling at a stall-level duty. */
-void MotorSetDuty(uint8_t duty_pct)
+/* ── Scripted pick-and-place ──────────────────────────────────────────────────
+ *  Called when the patrol confirms a RED object ahead. Sequence:
+ *    1. Open gripper, swing base to front, reach down to the floor.
+ *    2. Close gripper on the object.
+ *    3. Raise to the carry pose (object clears the ground).
+ *    4. Swing base 90° left to the drop-off.
+ *    5. Lower, open gripper to release.
+ *    6. Raise and park back at front/90°.
+ *  All angles are the fixed ARM_ / GRIP_ constants (calibrate on the robot).
+ *  Blocks the caller for the whole move; joints are released between steps so a
+ *  weak/stalling MG90S never sits at full current. */
+void PickPlaceRedObject()
 {
-    duty_pct = (duty_pct > 100) ? 100 : duty_pct;
+    Serial.println("[Arm] RED object — pick-and-place start");
 
-    uint16_t on_count = 0;
-    if (duty_pct == 0)
-    {
-        on_count = 0;
-    }
-    else if (duty_pct < MOTOR_SPEED_MIN)
-    {
-        /* Clamp to minimum to prevent stalling — or zero if caller wants full stop */
-        on_count = (uint16_t)((MOTOR_SPEED_MIN * (uint32_t)PCA_PWM_MAX) / 100);
-    }
-    else
-    {
-        on_count = (uint16_t)((duty_pct * (uint32_t)PCA_PWM_MAX) / 100);
-    }
+    /* 1. Approach: open jaws, face front, reach down. */
+    SetServoAngle(SERVO_CH_GRIPPER, GRIP_OPEN_DEG);
+    MoveServoSmooth(SERVO_CH_BASE,     ARM_BASE_FRONT_DEG);
+    MoveServoSmooth(SERVO_CH_SHOULDER, ARM_SHOULDER_DOWN_DEG);
+    MoveServoSmooth(SERVO_CH_ELBOW,    ARM_ELBOW_DOWN_DEG);
+    delay(GRIP_SETTLE_MS);
 
-    SetPCAPwm(MOTOR_PWM_ENA, on_count);
-    SetPCAPwm(MOTOR_PWM_ENB, on_count);
+    /* 2. Grip. Hold the gripper energised while carrying so it keeps its clamp. */
+    SetServoAngle(SERVO_CH_GRIPPER, GRIP_CLOSED_DEG);
+    delay(GRIP_SETTLE_MS);
+
+    /* 3. Lift to carry pose. */
+    MoveServoSmooth(SERVO_CH_SHOULDER, ARM_SHOULDER_UP_DEG);
+    MoveServoSmooth(SERVO_CH_ELBOW,    ARM_ELBOW_UP_DEG);
+
+    /* 4. Carry: swing the base 90° left to the drop-off. */
+    MoveServoSmooth(SERVO_CH_BASE, ARM_BASE_LEFT_DEG);
+
+    /* 5. Lower and release. */
+    MoveServoSmooth(SERVO_CH_SHOULDER, ARM_SHOULDER_DOWN_DEG);
+    MoveServoSmooth(SERVO_CH_ELBOW,    ARM_ELBOW_DOWN_DEG);
+    delay(GRIP_SETTLE_MS);
+    SetServoAngle(SERVO_CH_GRIPPER, GRIP_OPEN_DEG);
+    delay(GRIP_SETTLE_MS);
+
+    /* 6. Raise clear, swing back to front, park. */
+    MoveServoSmooth(SERVO_CH_SHOULDER, ARM_SHOULDER_UP_DEG);
+    MoveServoSmooth(SERVO_CH_ELBOW,    ARM_ELBOW_UP_DEG);
+    MoveServoSmooth(SERVO_CH_BASE,     ARM_BASE_FRONT_DEG);
+
+    /* Release every joint so nothing sits at stall current. */
+    DisableServo(SERVO_CH_GRIPPER);
+    DisableServo(SERVO_CH_ELBOW);
+    DisableServo(SERVO_CH_SHOULDER);
+    DisableServo(SERVO_CH_BASE);
+
+    Serial.println("[Arm] Pick-and-place done — object placed 90° left");
+}
+
+/* ── Red-object gripper routine ────────────────────────────────────────────────
+ *  Called when the colour sensor sees RED. Simple scripted sequence, no checks:
+ *    1. Open the gripper.
+ *    2. Close it after 3 s.
+ *    3. Turn the base 90° (to the left drop-off position).
+ *    4. Open the gripper again to release.
+ *  Blocks the caller for the whole sequence. Joints are released at the end so
+ *  nothing sits at stall current.
+ * ──────────────────────────────────────────────────────────────────────────── */
+void RedObjectGripSequence()
+{
+    Serial.println("[Arm] RED detected — grip sequence start");
+
+    /* 1. Open gripper */
+    SetServoAngle(SERVO_CH_GRIPPER, GRIP_OPEN_DEG);
+    delay(3000);
+
+    /* 2. Close gripper after 3 s */
+    SetServoAngle(SERVO_CH_GRIPPER, GRIP_CLOSED_DEG);
+    delay(GRIP_SETTLE_MS);
+
+    /* 3. Turn the base 90° */
+    MoveServoSmooth(SERVO_CH_BASE, ARM_BASE_LEFT_DEG);
+
+    /* 4. Open gripper again to release */
+    SetServoAngle(SERVO_CH_GRIPPER, GRIP_OPEN_DEG);
+    delay(GRIP_SETTLE_MS);
+
+    /* Park the base back to front and release every joint */
+    MoveServoSmooth(SERVO_CH_BASE, ARM_BASE_FRONT_DEG);
+    DisableServo(SERVO_CH_GRIPPER);
+    DisableServo(SERVO_CH_BASE);
+
+    Serial.println("[Arm] RED grip sequence done");
 }
 
 /* ── Closed-loop stub ──────────────────────────────────────────────────────── */

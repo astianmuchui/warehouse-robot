@@ -1,0 +1,12 @@
+Enhance motor control: PWM speed via PCA9685, IK arm poses, speed ramping
+
+- Split MotorDrive() into MotorSetDirection() (PCF8574 IN1-IN4) +
+  MotorSetDuty() (PCA9685 ch14/15 ENA/ENB) for real PWM speed control
+- Add motor_speed_task: smooth ramp +/-4% per 12ms tick (0->80% in ~240ms)
+- Add ArmSolveIK(): 2-link planar IK with yaw base rotation
+- Add pose_cmd_task: receives {x,y,z,gripper} Cartesian targets,
+  solves IK, interpolates joints 2deg/tick
+- Fix motor_cmd_t struct usage throughout (was cast as plain enum)
+- Wire g_pose_cmd_queue and g_color_queue in main.cpp
+- Add robot/cmd/pose MQTT topic with handler and subscription
+- Add SetPCAPwm() and MotorSetFeedback() stub in servo_arm.cpp

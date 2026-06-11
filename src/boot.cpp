@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include <Wire.h>
 #include "defines.h"
 
 /**
@@ -10,6 +11,8 @@ void initialize_pins()
 {
 
     Serial.begin(115200);
+    Wire.begin(I2C_SDA, I2C_SCL);
+    Wire.setClock(100000);
 
     pinMode(HC_SR04_TRIG, OUTPUT);
     pinMode(HC_SR04_ECHO, INPUT);

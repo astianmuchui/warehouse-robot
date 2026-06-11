@@ -187,6 +187,9 @@ void callback(char *topic, byte *message, unsigned int length)
         cmd.speed = doc["speed"] | -1;
         if (cmd.speed > 100) cmd.speed = 100;
 
+        /* External left/right are discrete 90° pivots (see motor_cmd_task). */
+        cmd.pivot = true;
+
         if      (strcmp(cmd_str, "forward")  == 0) cmd.dir = MOTOR_FORWARD;
         else if (strcmp(cmd_str, "backward") == 0) cmd.dir = MOTOR_BACKWARD;
         else if (strcmp(cmd_str, "left")     == 0) cmd.dir = MOTOR_LEFT;
@@ -199,10 +202,15 @@ void callback(char *topic, byte *message, unsigned int length)
             return;
         }
 
-        xQueueOverwrite(g_motor_cmd_queue, &cmd);
+        /* Route to the patrol task (not motor_cmd_task directly): the patrol
+           task arbitrates between its default forward/line behaviour and
+           external commands, honouring this command for PATROL_CMD_HOLD_MS
+           before resuming patrol. The patrol task remains the sole producer
+           to g_motor_cmd_queue. */
+        xQueueOverwrite(g_drive_cmd_queue, &cmd);
     }
 
-    /* Arm commands 
+    /* Arm commands
      *  Topic : robot/cmd/arm
      *  Schema: { "joint": "base" | "shoulder" | "elbow" | "gripper",
      *            "angle": 0-180 }
@@ -331,12 +339,22 @@ static void publish_task(void *)
 
     char buf[1024];
 
+    /* PubSubClient (_mqtt) is NOT thread-safe, so ALL access — both loop() and
+       publish() — must stay on this single task. The catch: _mqtt.loop() is the
+       only thing that services the incoming socket and fires the command
+       callback(), so it has to run often, not just when we publish.
+
+       Previously this blocked up to PUBLISH_INTERVAL_MS (5 s) on the publish
+       semaphore before each loop(), so an inbound command sat unserviced in the
+       socket for up to ~5 s — the command-execution lag. Instead, poll the
+       socket on a short MQTT_POLL_MS tick and only do the heavy sensor publish
+       on the ticks where the publish semaphore actually fired. */
     while (true)
     {
         bool publish_now =
-            (xSemaphoreTake(g_publish_sem, pdMS_TO_TICKS(5000)) == pdTRUE);
+            (xSemaphoreTake(g_publish_sem, pdMS_TO_TICKS(MQTT_POLL_MS)) == pdTRUE);
 
-        g_net.loop();
+        g_net.loop();   /* service inbound commands every MQTT_POLL_MS */
 
         if (!publish_now)
             continue;

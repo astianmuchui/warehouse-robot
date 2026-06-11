@@ -168,7 +168,7 @@ static volatile motor_dir_t s_current_dir = MOTOR_STOP;
 static portMUX_TYPE      s_motor_mux = portMUX_INITIALIZER_UNLOCKED;
 
 /* motor_cmd_task: receives {dir, speed} commands from the MQTT callback,
-   commits the direction to the PCF8574 immediately, and posts the target
+   commits the direction to the PCA9685 immediately, and posts the target
    speed for motor_speed_task to ramp toward. */
 void motor_cmd_task(void *)
 {
@@ -192,6 +192,74 @@ void motor_cmd_task(void *)
             continue;
 
         bool dir_changed = (cmd.dir != prev_dir);
+
+        /* ── Discrete 90° turn ────────────────────────────────────────────────
+           An *external* LEFT/RIGHT command (cmd.pivot == true) is a single
+           in-place pivot, not a continuous spin: pivot at TURN_DUTY_PCT for
+           TURN_90_MS, then stop. We drive the duty directly (bypassing the slow
+           ramp task) because the turn window is short — the ramp would eat most
+           of it and the robot would barely move. After the dwell we hand control
+           back to STOP. Line-follow corrections set pivot=false and fall through
+           to the continuous-turn path below, so steering stays smooth. */
+        if ((cmd.dir == MOTOR_LEFT || cmd.dir == MOTOR_RIGHT) && cmd.pivot)
+        {
+            MotorSetDirection(cmd.dir);
+
+            portENTER_CRITICAL(&s_motor_mux);
+            s_target_duty = TURN_DUTY_PCT;   /* keep ramp task in sync, no fight */
+            s_current_dir = cmd.dir;
+            portEXIT_CRITICAL(&s_motor_mux);
+
+            MotorSetDuty(TURN_DUTY_PCT);     /* full 80 % immediately, no ramp */
+            Serial.printf("[Motor] %s 90° pivot @ %u%% for %u ms\n",
+                          names[(int)cmd.dir], (unsigned)TURN_DUTY_PCT,
+                          (unsigned)TURN_90_MS);
+            if (dir_changed) Pulsate(BUZZER_PIN, 1, 60);
+
+            vTaskDelay(pdMS_TO_TICKS(TURN_90_MS));
+
+            /* Stop and settle back into the ramp-managed STOP state */
+            MotorSetDirection(MOTOR_STOP);
+            portENTER_CRITICAL(&s_motor_mux);
+            s_target_duty = 0;
+            s_current_dir = MOTOR_STOP;
+            portEXIT_CRITICAL(&s_motor_mux);
+            MotorSetDuty(0);
+
+            prev_dir = MOTOR_STOP;   /* turn left us stopped, not turning */
+            continue;
+        }
+
+        /* ── Timed forward/backward ───────────────────────────────────────────
+           On a FORWARD/BACKWARD command just drive at full duty immediately and
+           run for 3 s, then stop. No ramp, no checks — same direct-drive + dwell
+           pattern as the LEFT/RIGHT pivot above. */
+        if (cmd.dir == MOTOR_FORWARD || cmd.dir == MOTOR_BACKWARD)
+        {
+            MotorSetDirection(cmd.dir);
+
+            portENTER_CRITICAL(&s_motor_mux);
+            s_target_duty = 100;             /* keep ramp task in sync, no fight */
+            s_current_dir = cmd.dir;
+            portEXIT_CRITICAL(&s_motor_mux);
+
+            MotorSetDuty(100);               /* full speed immediately, no ramp */
+            Serial.printf("[Motor] %s @ 100%% for 3000 ms\n", names[(int)cmd.dir]);
+            if (dir_changed) Pulsate(BUZZER_PIN, 1, 60);
+
+            vTaskDelay(pdMS_TO_TICKS(3000));
+
+            /* Stop and settle back into the ramp-managed STOP state */
+            MotorSetDirection(MOTOR_STOP);
+            portENTER_CRITICAL(&s_motor_mux);
+            s_target_duty = 0;
+            s_current_dir = MOTOR_STOP;
+            portEXIT_CRITICAL(&s_motor_mux);
+            MotorSetDuty(0);
+
+            prev_dir = MOTOR_STOP;
+            continue;
+        }
 
         /* Resolve speed: -1 means "use cruise default" */
         uint8_t duty = (cmd.speed < 0) ? MOTOR_SPEED_DEFAULT
@@ -272,16 +340,27 @@ void motor_speed_task(void *)
         }
 
         /* Provide encoder feedback once hardware is wired (no-op stub for now) */
-        MotorSetFeedback(0.0f, 0.0f);
+        MotorSetFeedback(0.001f, 0.001f);
     }
 }
 
 /* ── Arm joint task ────────────────────────────────────────────────────────── */
 
+/* Map a PCA9685 channel (now 12–15) back to a joint name for logging. */
+static const char *joint_name_for(uint8_t ch)
+{
+    switch (ch)
+    {
+    case SERVO_CH_BASE:     return "base";
+    case SERVO_CH_SHOULDER: return "shoulder";
+    case SERVO_CH_ELBOW:    return "elbow";
+    case SERVO_CH_GRIPPER:  return "gripper";
+    default:                return "?";
+    }
+}
+
 void servo_cmd_task(void *)
 {
-    static const char *joint_names[] = { "base", "shoulder", "elbow", "gripper" };
-
     servo_cmd_t cmd;
 
     while (true)
@@ -289,7 +368,7 @@ void servo_cmd_task(void *)
         if (xQueueReceive(g_servo_cmd_queue, &cmd, portMAX_DELAY) != pdTRUE)
             continue;
 
-        const char *name = (cmd.channel < 4) ? joint_names[cmd.channel] : "?";
+        const char *name = joint_name_for(cmd.channel);
 
         /* Smooth, full-power sweep to the target (the interpolation *is* the
            settle, so there's no extra blocking delay holding up the next
@@ -308,7 +387,18 @@ void servo_cmd_task(void *)
                       keep_energised ? "(holding)" : "(released)");
 
         if (!keep_energised)
+        {
             DisableServo(cmd.channel);
+        }
+        else
+        {
+            /* Stall protection: even a "held" joint gets PWM cut after a bounded
+               window, so a servo that can't reach position (binding joint) can't
+               sit at full stall torque humming until its gears strip. Gearbox
+               friction holds the pose afterward. */
+            vTaskDelay(pdMS_TO_TICKS(SERVO_MAX_ENERGIZED_MS));
+            DisableServo(cmd.channel);
+        }
     }
 }
 
@@ -320,7 +410,7 @@ void servo_cmd_task(void *)
    Interpolation prevents sudden jumps that could damage the arm linkage or
    knock over a payload.
 
-   How to send a pose command via MQTT:
+   How to send a pose command via:
      Topic: robot/cmd/pose
      Body:  { "x": 80, "y": 0, "z": 50, "gripper": 30 }
 
@@ -383,12 +473,16 @@ void pose_cmd_task(void *)
         {
             SetServoAngle(SERVO_CH_GRIPPER, (uint8_t)pose.gripper);
             vTaskDelay(pdMS_TO_TICKS(SERVO_SETTLE_MS));
-            /* Gripper holds load — leave PWM on */
+            DisableServo(SERVO_CH_GRIPPER);   /* stall protection: don't hold a grip indefinitely */
         }
 
-        /* Release shoulder/elbow PWM based on their hold config; base always off */
-        if (!ARM_HOLD_SHOULDER) DisableServo(SERVO_CH_SHOULDER);
-        if (!ARM_HOLD_ELBOW)    DisableServo(SERVO_CH_ELBOW);
+        /* Stall protection: cap how long held joints stay energised, then cut
+           PWM on every joint so a binding/stalled servo can't hum at full
+           current until its gears strip. Gearbox friction holds the pose. */
+        if (ARM_HOLD_SHOULDER || ARM_HOLD_ELBOW)
+            vTaskDelay(pdMS_TO_TICKS(SERVO_MAX_ENERGIZED_MS));
+        DisableServo(SERVO_CH_SHOULDER);
+        DisableServo(SERVO_CH_ELBOW);
         DisableServo(SERVO_CH_BASE);
 
         Beep(1);
@@ -411,6 +505,8 @@ void color_task(void *)
         return;
     }
 
+    bool was_red = false;   /* edge-trigger so the sequence runs once per red */
+
     while (true)
     {
         xSemaphoreTake(s_color_sem, portMAX_DELAY);
@@ -423,6 +519,15 @@ void color_task(void *)
         Serial.printf("[Color] R=%u G=%u B=%u C=%u  %.0fK  %.0f lux  → %s\n",
                       d.r, d.g, d.b, d.c, d.color_temp, d.lux,
                       ColorName(d.dominant));
+
+        /* On RED: open gripper, close after 3 s, turn base 90°, open again.
+           Edge-triggered so it fires once when red appears, not every read. */
+        if (d.dominant == COLOR_RED && !was_red)
+        {
+            Serial.println("[Color] RED edge → running grip sequence");
+            RedObjectGripSequence();
+        }
+        was_red = (d.dominant == COLOR_RED);
 
         vTaskDelay(pdMS_TO_TICKS(PUBLISH_INTERVAL_MS / 2));
     }
