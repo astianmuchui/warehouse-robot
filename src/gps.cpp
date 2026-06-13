@@ -11,15 +11,14 @@ void GPS_INIT()
     gpsSerial.begin(GPS_BAUD, SERIAL_8N1, RXD2, TXD2);
 }
 
-
-
-
+/** GPS_DRAIN - feed any pending UART bytes into the NMEA parser. */
 void GPS_DRAIN()
 {
     while (gpsSerial.available() > 0)
         gps.encode(gpsSerial.read());
 }
 
+/** READ_GPS - latest fix; data.valid is false until the module has a lock. */
 gps_data_t READ_GPS()
 {
     GPS_DRAIN();

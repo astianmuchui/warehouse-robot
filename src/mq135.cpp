@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include "defines.h"
 
+/** ReadMQ135 - rough CO2 ppm from the raw ADC voltage (needs a warm-up first). */
 mq135_data_t ReadMQ135()
 {
     float air_quality = analogRead(MQ_PIN);

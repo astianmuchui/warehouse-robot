@@ -1,7 +1,7 @@
 #include <Arduino.h>
 #include "defines.h"
 
-
+/** ReadUltrasonic - distance in cm, or -1 on no echo (out of range/timeout). */
 float ReadUltrasonic()
 {
     digitalWrite(HC_SR04_TRIG, HIGH);

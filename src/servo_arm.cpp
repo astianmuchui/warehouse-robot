@@ -6,43 +6,36 @@
 
 static Adafruit_PWMServoDriver pca9685(PCA9685_ADDR);
 
-/* Last commanded angle, indexed by PCA9685 channel (0–15).  The arm servos now
-   live on channels 12–15, so this must be sized to the full channel count — a
-   4-element array indexed by channel 12+ would be an out-of-bounds write.
-   Seeded to 90° so the first interpolated move starts from the parked pose. */
+/* Last commanded angle per PCA9685 channel. Full 16 wide (not 4) so indexing by
+   raw channel number is always in bounds. Seeded to 90° = parked. */
 static uint8_t s_last_angle[16] = {
     90, 90, 90, 90, 90, 90, 90, 90,
     90, 90, 90, 90, 90, 90, 90, 90,
 };
 
-/* True for the four arm-servo channels (12–15), which get angle tracking and
-   smooth interpolation; other channels (e.g. motor enables) do not. */
+/** is_servo_channel - true for the four arm joints (they get angle tracking). */
 static inline bool is_servo_channel(uint8_t ch)
 {
     return ch == SERVO_CH_GRIPPER  || ch == SERVO_CH_SHOULDER ||
            ch == SERVO_CH_ELBOW    || ch == SERVO_CH_BASE;
 }
 
+/** InitServoDriver - start the PCA9685, check it ACKs, park all joints at 90°. */
 void InitServoDriver()
 {
     pca9685.begin();
     pca9685.setPWMFreq(PCA_PWM_FREQ);
     delay(10);
 
-    /* Adafruit's begin() returns void, so verify the chip actually ACKs on the
-       bus. If this fails, no servo or motor will ever move — surface it loudly
-       rather than silently driving a chip that isn't there. */
+    /* begin() returns void, so confirm the chip is actually there. If it isn't,
+       nothing moves — say so loudly. */
     Wire.beginTransmission(PCA9685_ADDR);
     if (Wire.endTransmission() == 0)
         Serial.printf("[Servo] PCA9685 ACK at 0x%02X\n", PCA9685_ADDR);
     else
         Serial.printf("[Servo] PCA9685 NOT responding at 0x%02X — nothing will move!\n", PCA9685_ADDR);
 
-    /* Zero the motor enable channels so wheels don't spin on boot */
     MotorSetDuty(0);
-
-    /* Park all joints at 90°. Load-bearing joints (shoulder/elbow) stay
-       energised for holding torque; base/gripper release to stay cool & quiet. */
 
     SetServoAngle(SERVO_CH_BASE,     90);
     SetServoAngle(SERVO_CH_SHOULDER, 90);
@@ -55,9 +48,10 @@ void InitServoDriver()
     if (!ARM_HOLD_ELBOW)    DisableServo(SERVO_CH_ELBOW);
     DisableServo(SERVO_CH_GRIPPER);
 
-    Serial.println("[Servo] PCA9685 ready — parked at 90°, shoulder/elbow holding, motor enables at 0");
+    Serial.println("[Servo] PCA9685 ready — parked at 90°");
 }
 
+/** SetServoAngle - map 0-180° into the valid pulse band and write it. */
 void SetServoAngle(uint8_t channel, uint8_t angle)
 {
     angle = constrain(angle, 0, 180);
@@ -67,19 +61,17 @@ void SetServoAngle(uint8_t channel, uint8_t angle)
         s_last_angle[channel] = angle;
 }
 
+/** DisableServo - cut PWM so the servo coasts silently to its held position. */
 void DisableServo(uint8_t channel)
 {
-    /* Full LOW on both on/off counts cuts PWM without changing the
-       physical register state — servo coasts silently to held position */
     pca9685.setPWM(channel, 0, 0);
 }
 
-/* ── Smooth single-joint move ──────────────────────────────────────────────────
- *  Interpolates from the joint's current angle to `target` in small steps so the
- *  motion is gentle instead of slamming to position.  The servo is held at full
- *  power for the whole sweep (no PWM gaps), which is also why the weak
- *  shoulder/elbow feel stronger.  Re-disabling idle joints is left to the caller.
- * ──────────────────────────────────────────────────────────────────────────── */
+/**
+ * MoveServoSmooth - interpolate from the joint's current angle to target in
+ * small steps so the motion is gentle. Stays energised the whole sweep;
+ * re-disabling idle joints is the caller's job.
+ */
 void MoveServoSmooth(uint8_t channel, uint8_t target)
 {
     if (!is_servo_channel(channel)) { SetServoAngle(channel, target); return; }
@@ -93,68 +85,103 @@ void MoveServoSmooth(uint8_t channel, uint8_t target)
         SetServoAngle(channel, (uint8_t)a);
         vTaskDelay(pdMS_TO_TICKS(ARM_STEP_MS));
     }
-    SetServoAngle(channel, target);   /* land exactly on target */
+    SetServoAngle(channel, target);
 }
 
-/* ── Raw PCA9685 PWM helper ────────────────────────────────────────────────── */
+/**
+ * MoveTwoServosSmooth - step two joints toward their targets together. Doesn't
+ * add torque (each servo still fights its own load); it keeps the arm tucked so
+ * the shoulder sees a lower PEAK load than a sequential shoulder-then-elbow move.
+ */
+void MoveTwoServosSmooth(uint8_t ch_a, uint8_t tgt_a, uint8_t ch_b, uint8_t tgt_b)
+{
+    if (!is_servo_channel(ch_a) || !is_servo_channel(ch_b))
+    {
+        MoveServoSmooth(ch_a, tgt_a);
+        MoveServoSmooth(ch_b, tgt_b);
+        return;
+    }
 
-/* Set any PCA9685 channel to a 12-bit duty (0–4095 ticks active out of 4096).
-   Use setPin() rather than setPWM(ch,0,count): setPin() applies the PCA9685's
-   special full-on (4096) / full-off bits at the 0 and 4095 endpoints, so an
-   L298N enable/IN line driven to 4095 is a clean steady HIGH instead of a
-   pulse with a one-tick dropout every cycle. */
+    tgt_a = constrain(tgt_a, 0, 180);
+    tgt_b = constrain(tgt_b, 0, 180);
+
+    int a = s_last_angle[ch_a];
+    int b = s_last_angle[ch_b];
+
+    while (a != (int)tgt_a || b != (int)tgt_b)
+    {
+        if (a < (int)tgt_a) a = min(a + (int)ARM_STEP_DEG, (int)tgt_a);
+        else if (a > (int)tgt_a) a = max(a - (int)ARM_STEP_DEG, (int)tgt_a);
+
+        if (b < (int)tgt_b) b = min(b + (int)ARM_STEP_DEG, (int)tgt_b);
+        else if (b > (int)tgt_b) b = max(b - (int)ARM_STEP_DEG, (int)tgt_b);
+
+        SetServoAngle(ch_a, (uint8_t)a);
+        SetServoAngle(ch_b, (uint8_t)b);
+        vTaskDelay(pdMS_TO_TICKS(ARM_STEP_MS));
+    }
+}
+
+/** SetPCAPwm - raw 12-bit duty. setPin() gives clean full-on/off at the ends. */
 void SetPCAPwm(uint8_t channel, uint16_t on_count)
 {
     on_count = (on_count > PCA_PWM_MAX) ? PCA_PWM_MAX : on_count;
     pca9685.setPin(channel, on_count);
 }
 
-/* ── Scripted pick-and-place ──────────────────────────────────────────────────
- *  Called when the patrol confirms a RED object ahead. Sequence:
- *    1. Open gripper, swing base to front, reach down to the floor.
- *    2. Close gripper on the object.
- *    3. Raise to the carry pose (object clears the ground).
- *    4. Swing base 90° left to the drop-off.
- *    5. Lower, open gripper to release.
- *    6. Raise and park back at front/90°.
- *  All angles are the fixed ARM_ / GRIP_ constants (calibrate on the robot).
- *  Blocks the caller for the whole move; joints are released between steps so a
- *  weak/stalling MG90S never sits at full current. */
+/* Drive the gripper exactly the way a manual MQTT `robot/cmd/arm` command does:
+   post a servo_cmd_t to g_servo_cmd_queue and let servo_cmd_task move it. The
+   queue path is the one confirmed to drive the gripper correctly, so the
+   sequences reuse it; the existing delays pace the async move. */
+static void grip_via_queue(uint8_t angle)
+{
+    servo_cmd_t scmd;
+    scmd.channel = SERVO_CH_GRIPPER;
+    scmd.angle   = angle;
+    scmd.hold    = false;
+    if (xQueueSend(g_servo_cmd_queue, &scmd, 0) != pdTRUE)
+        Serial.println("[Arm] Servo queue full — gripper command dropped");
+}
+
+/**
+ * PickPlaceRedObject - reach down, grip, lift, swing the base 90° left, lower,
+ * release, park. Shoulder+elbow move together so the arm stays tucked through
+ * the heavy part. Blocks for the whole sequence. All angles need calibrating.
+ */
 void PickPlaceRedObject()
 {
     Serial.println("[Arm] RED object — pick-and-place start");
 
-    /* 1. Approach: open jaws, face front, reach down. */
-    SetServoAngle(SERVO_CH_GRIPPER, GRIP_OPEN_DEG);
-    MoveServoSmooth(SERVO_CH_BASE,     ARM_BASE_FRONT_DEG);
-    MoveServoSmooth(SERVO_CH_SHOULDER, ARM_SHOULDER_DOWN_DEG);
-    MoveServoSmooth(SERVO_CH_ELBOW,    ARM_ELBOW_DOWN_DEG);
+    /* 1. Open, face front, reach down (tucked). */
+    grip_via_queue(GRIP_OPEN_DEG);
+    MoveServoSmooth(SERVO_CH_BASE, ARM_BASE_FRONT_DEG);
+    MoveTwoServosSmooth(SERVO_CH_SHOULDER, ARM_SHOULDER_DOWN_DEG,
+                        SERVO_CH_ELBOW,    ARM_ELBOW_DOWN_DEG);
     delay(GRIP_SETTLE_MS);
 
-    /* 2. Grip. Hold the gripper energised while carrying so it keeps its clamp. */
-    SetServoAngle(SERVO_CH_GRIPPER, GRIP_CLOSED_DEG);
+    /* 2. Grip. */
+    grip_via_queue(GRIP_CLOSED_DEG);
     delay(GRIP_SETTLE_MS);
 
     /* 3. Lift to carry pose. */
-    MoveServoSmooth(SERVO_CH_SHOULDER, ARM_SHOULDER_UP_DEG);
-    MoveServoSmooth(SERVO_CH_ELBOW,    ARM_ELBOW_UP_DEG);
+    MoveTwoServosSmooth(SERVO_CH_SHOULDER, ARM_SHOULDER_UP_DEG,
+                        SERVO_CH_ELBOW,    ARM_ELBOW_UP_DEG);
 
-    /* 4. Carry: swing the base 90° left to the drop-off. */
+    /* 4. Swing base 90° left. */
     MoveServoSmooth(SERVO_CH_BASE, ARM_BASE_LEFT_DEG);
 
     /* 5. Lower and release. */
-    MoveServoSmooth(SERVO_CH_SHOULDER, ARM_SHOULDER_DOWN_DEG);
-    MoveServoSmooth(SERVO_CH_ELBOW,    ARM_ELBOW_DOWN_DEG);
+    MoveTwoServosSmooth(SERVO_CH_SHOULDER, ARM_SHOULDER_DOWN_DEG,
+                        SERVO_CH_ELBOW,    ARM_ELBOW_DOWN_DEG);
     delay(GRIP_SETTLE_MS);
-    SetServoAngle(SERVO_CH_GRIPPER, GRIP_OPEN_DEG);
+    grip_via_queue(GRIP_OPEN_DEG);
     delay(GRIP_SETTLE_MS);
 
-    /* 6. Raise clear, swing back to front, park. */
-    MoveServoSmooth(SERVO_CH_SHOULDER, ARM_SHOULDER_UP_DEG);
-    MoveServoSmooth(SERVO_CH_ELBOW,    ARM_ELBOW_UP_DEG);
-    MoveServoSmooth(SERVO_CH_BASE,     ARM_BASE_FRONT_DEG);
+    /* 6. Raise clear, swing back, park. */
+    MoveTwoServosSmooth(SERVO_CH_SHOULDER, ARM_SHOULDER_UP_DEG,
+                        SERVO_CH_ELBOW,    ARM_ELBOW_UP_DEG);
+    MoveServoSmooth(SERVO_CH_BASE, ARM_BASE_FRONT_DEG);
 
-    /* Release every joint so nothing sits at stall current. */
     DisableServo(SERVO_CH_GRIPPER);
     DisableServo(SERVO_CH_ELBOW);
     DisableServo(SERVO_CH_SHOULDER);
@@ -163,35 +190,25 @@ void PickPlaceRedObject()
     Serial.println("[Arm] Pick-and-place done — object placed 90° left");
 }
 
-/* ── Red-object gripper routine ────────────────────────────────────────────────
- *  Called when the colour sensor sees RED. Simple scripted sequence, no checks:
- *    1. Open the gripper.
- *    2. Close it after 3 s.
- *    3. Turn the base 90° (to the left drop-off position).
- *    4. Open the gripper again to release.
- *  Blocks the caller for the whole sequence. Joints are released at the end so
- *  nothing sits at stall current.
- * ──────────────────────────────────────────────────────────────────────────── */
+/**
+ * RedObjectGripSequence - simpler routine the colour task runs on a RED edge:
+ * open, close after 3 s, swing base 90° left, open to release, park.
+ */
 void RedObjectGripSequence()
 {
     Serial.println("[Arm] RED detected — grip sequence start");
 
-    /* 1. Open gripper */
-    SetServoAngle(SERVO_CH_GRIPPER, GRIP_OPEN_DEG);
+    grip_via_queue(GRIP_OPEN_DEG);
     delay(3000);
 
-    /* 2. Close gripper after 3 s */
-    SetServoAngle(SERVO_CH_GRIPPER, GRIP_CLOSED_DEG);
+    grip_via_queue(GRIP_CLOSED_DEG);
     delay(GRIP_SETTLE_MS);
 
-    /* 3. Turn the base 90° */
     MoveServoSmooth(SERVO_CH_BASE, ARM_BASE_LEFT_DEG);
 
-    /* 4. Open gripper again to release */
-    SetServoAngle(SERVO_CH_GRIPPER, GRIP_OPEN_DEG);
+    grip_via_queue(GRIP_OPEN_DEG);
     delay(GRIP_SETTLE_MS);
 
-    /* Park the base back to front and release every joint */
     MoveServoSmooth(SERVO_CH_BASE, ARM_BASE_FRONT_DEG);
     DisableServo(SERVO_CH_GRIPPER);
     DisableServo(SERVO_CH_BASE);
@@ -199,11 +216,7 @@ void RedObjectGripSequence()
     Serial.println("[Arm] RED grip sequence done");
 }
 
-/* ── Closed-loop stub ──────────────────────────────────────────────────────── */
-
-/* Placeholder for wheel encoder feedback once encoders are fitted.
-   Currently a no-op; a PID controller will live here once left_rpm / right_rpm
-   are available from hardware interrupts on the encoder GPIO lines. */
+/** MotorSetFeedback - encoder/PID hook, no-op until encoders are fitted. */
 void MotorSetFeedback(float left_rpm, float right_rpm)
 {
     (void)left_rpm;

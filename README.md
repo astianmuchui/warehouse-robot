@@ -1,466 +1,302 @@
 # Warehouse Robot Firmware
 
-ESP32-based firmware for a warehouse robot. Reads six sensors, detects IMU
-events (collision, free-fall, stationary), drives a two-wheel base via an
-L298N (direction over PCF8574 + PWM speed over PCA9685), and drives a
-four-joint arm via the same PCA9685 — with both per-joint and Cartesian
-(inverse-kinematics) control. All telemetry is published to an MQTT broker
-through a FreeRTOS, queue-based architecture.
+This is the firmware for a small warehouse robot we built around an ESP32. It
+reads a handful of sensors, watches its IMU for things like bumps and
+free-falls, drives a two-wheel base, swings a little four-joint arm that can
+pick things up, and reports everything it sees to an MQTT broker. You drive it
+and command the arm over MQTT too.
+
+It's a student/hobby project, so treat it as one. Plenty of it is calibrated by
+hand and tuned by trial and error. Wherever you see a "CALIBRATE on the robot"
+note in the code, it means exactly that. The single source of truth for pins,
+channels and tuning values is [include/defines.h](include/defines.h); if this
+README ever disagrees with that file, believe the file.
 
 ---
 
-## Hardware
+## What's on the robot
 
 ### Sensors
 
-| Sensor | Interface | GPIO | Sample Rate |
-| --- | --- | --- | --- |
-| DHT11 (temp + humidity) | 1-Wire | 15 | 2 s |
-| MPU6050 (accel + gyro + temp) | I2C (SDA 21, SCL 22) | 21 / 22 | 500 ms |
-| HC-SR04 ultrasonic (proximity) | GPIO | TRIG 12 / ECHO 23 | 1 s |
-| MQ-135 (air quality / CO₂) | ADC | 35 | 2 s (after 2 min warm-up) |
-| GPS (NMEA via UART2) | UART2 | RX 16 / TX 17 | 1 s |
-| TCS34725 (RGB colour, optional) | I2C (`0x29`) | 21 / 22 | 1 s |
-
-The colour sensor is probed at boot. If it is absent, [color_task](src/tasks.cpp#L427)
-self-deletes and the rest of the firmware runs unchanged.
-
-### Actuators
-
-#### L298N Motor Driver
-
-Direction lives on a PCF8574 I/O expander (`0x20`, INT on GPIO 34). Speed
-(ENA / ENB) is driven by PWM on the **PCA9685**, so the wheels get real
-analog speed control instead of on/off.
-
-| Channel | L298N pin | Role |
+| Sensor | What it gives us | How it's wired |
 | --- | --- | --- |
-| PCF P0 | IN1 | Motor A forward |
-| PCF P1 | IN2 | Motor A reverse |
-| PCF P2 | IN3 | Motor B forward |
-| PCF P3 | IN4 | Motor B reverse |
-| PCA9685 ch 14 | ENA | Motor A PWM speed |
-| PCA9685 ch 15 | ENB | Motor B PWM speed |
-| PCF P4–P7 | — | Free (general purpose) |
+| DHT11 | temperature + humidity | 1-Wire on GPIO 15 |
+| MPU6050 | accel + gyro + die temp | I2C (SDA 21, SCL 22) |
+| HC-SR04 | distance to whatever's in front | TRIG 12, ECHO 23 |
+| MQ-135 | a rough air-quality / CO₂ number | ADC on GPIO 35 (needs a 2-minute warm-up) |
+| GPS | location, over NMEA | UART2, RX 16 / TX 17 |
+| TCS34725 | RGB colour of whatever's under it | I2C `0x29`, optional |
 
-Speed is ramped, not stepped — see [Smooth speed ramping](#smooth-speed-ramping).
+The colour sensor is the one part the robot genuinely doesn't need. We probe for
+it once at boot, and if it isn't there, the colour task just deletes itself and
+everything else carries on. So you can run the whole thing without it.
 
-#### PCA9685 I²C PWM Driver
+### The wheels (L298N)
 
-Address `0x40` on the shared I²C bus. Runs at 50 Hz for servos; the motor
-enable channels share that frequency. 12-bit duty resolution (0–4095).
+Early on the motor wiring went through a PCF8574 I/O expander and the PCA9685.
+That's gone now. Every motor line wires straight to an ESP32 GPIO, which is
+simpler and gives us real speed control:
 
-| Channel | Use |
-| --- | --- |
-| 0 | Arm base |
-| 1 | Arm shoulder |
-| 2 | Arm elbow |
-| 3 | Gripper |
-| 14 | Motor A enable (PWM) |
-| 15 | Motor B enable (PWM) |
-
-Servo pulse range: 500 µs (0°) → 2400 µs (180°). All joints park at **90°** on boot.
-
-By default, after a joint reaches its target the PWM is **cut** so the servo
-goes silent. The shoulder and elbow are exceptions — they bear load and would
-sag — so they hold by default ([defines.h:151-152](include/defines.h#L151-L152)).
-Any joint can also be force-held via `"hold": true` in the MQTT command.
-
-### Indicators
-
-| Peripheral | GPIO |
-| --- | --- |
-| Buzzer | 26 (LEDC PWM) |
-| LED 1 (built-in) | 2 |
-| LED 2 | 32 |
-| LED 3 | 33 |
-
-The buzzer is driven by **LEDC PWM** at ~5 % duty / 2300 Hz so it is much
-quieter than a `digitalWrite`-style buzzer. The previous loud 80/60/40 ms
-boot blast was replaced with two soft chirps.
-
-#### Buzzer Feedback
-
-| Event | Pattern |
-| --- | --- |
-| Power-on | 2 soft chirps |
-| WiFi connected | 2 × 80 ms |
-| MQTT connected | 2 soft chirps |
-| WiFi / MQTT error | 3–4 × 50 ms rapid |
-| Motor direction change (moving) | 1 × 60 ms |
-| Motor stopped / braked | 2 × 40 ms |
-| Each servo joint move | 1 soft chirp |
-| Pose target unreachable | 2 × 50 ms |
-| Pose target reached | 1 soft chirp |
-| Obstacle < 30 cm | 1 × 80 ms caution |
-| Obstacle < 15 cm | 3 × 50 ms urgent |
-| IMU motion / zero-motion event | 1 × 80 ms |
-| IMU free-fall event | 3 × 60 ms urgent |
-| Temperature > 50 °C | 2 × 80 ms |
-| Air quality > 400 ppm | 2 × 100 ms |
-
----
-
-## MQTT Topics
-
-All telemetry is rooted under `robot/devices/<DEVICE_ID>/`.
-`DEVICE_ID = WRBT202642` ([defines.h:213](include/defines.h#L213)).
-
-### Outbound (device → broker)
-
-| Topic | Trigger | Description |
+| Signal | GPIO | Job |
 | --- | --- | --- |
-| `robot/devices/{id}/boot` | Once at boot | Device online notification |
-| `robot/devices/{id}/readings` | Every 5 s | Full sensor snapshot |
-| `robot/devices/{id}/heartbeat` | Every 5 s | Liveness ping |
-| `robot/devices/{id}/events/motion` | Immediate | Collision / impact |
-| `robot/devices/{id}/events/freefall` | Immediate | Robot dropped |
-| `robot/devices/{id}/events/zero_motion` | Immediate | Robot became stationary |
+| IN1 / IN2 | 4 / 5 | Motor A direction |
+| IN3 / IN4 | 33 / 32 | Motor B direction |
+| ENA | 25 | Motor A speed (LEDC PWM) |
+| ENB | 27 | Motor B speed (LEDC PWM) |
 
-### Inbound (broker → device)
+IN1 to IN4 are plain digital direction lines. ENA/ENB run on native LEDC PWM at
+~20 kHz (above hearing, so no whine), which means actual proportional speed
+instead of the on/off-only behaviour the old PCA9685 wiring was stuck with.
 
-| Topic | Description |
+The speed isn't slammed on. A separate task ramps it up and down so the robot
+doesn't lurch. More on that under [the drive command](#robotcmddrive).
+
+### The arm (PCA9685)
+
+The PCA9685 PWM driver lives at `0x40` on the same I2C bus and now does nothing
+but servos. Four joints:
+
+| Channel | Joint |
 | --- | --- |
-| `robot/cmd/drive` | Wheel drive command (direction + optional speed) |
-| `robot/cmd/arm` | Single arm-joint command |
-| `robot/cmd/pose` | Cartesian end-effector target (inverse kinematics) |
+| 0 | base (yaw) |
+| 1 | elbow |
+| 2 | shoulder |
+| 3 | gripper |
+
+One thing worth knowing if you go poking at servo code: hobby servos want a
+1.0 to 2.0 ms pulse inside the 20 ms frame, **not** the full PWM range. At 50 Hz
+on the PCA9685 that works out to roughly 205 to 410 counts. Drive the full 0 to
+4095 range and the pulse falls outside the servo's valid window, so it just
+jitters or stalls. We map angles into that 205 to 410 band and leave it there.
+
+The shoulder and elbow are weak MG90S servos and they buzz and overheat if you
+ask them to *hold* a pose against gravity. So after every move we cut the PWM and
+let gearbox friction hold position. You get a little droop; you don't get a
+cooked servo. The gripper opens at 0° and clamps at ~40° (yes, that feels
+backwards, it's just what the physical servo does).
+
+### Buzzer and LEDs
+
+There's a buzzer on GPIO 26 and three LEDs (2, 32, 33). The buzzer is driven
+with PWM at a low duty so it's a soft chirp rather than the ear-splitting thing
+it used to be. It's the robot's only way of talking to you when there's no
+serial monitor attached, so it beeps for most events: connection, motion,
+obstacles, errors. The patterns are all in the code if you want to decode them.
 
 ---
 
-## JSON Payload Schemas
+## How it actually behaves
 
-### `…/boot`
+Right now **line following is turned off** (`LINE_FOLLOWING_ENABLED 0` in
+defines.h), so here's what the robot does out of the box:
 
-```json
-{
-  "device_id":  "WRBT202642",
-  "event":      "boot",
-  "timestamp":  1712500000,
-  "firmware":   "1.0.0",
-  "transport":  "wifi",
-  "ip":         "192.168.1.42",
-  "rssi":       -52,
-  "uptime_ms":  8340
-}
-```
+- It sits still until you tell it to move. Movement is MQTT-only.
+- You send it a drive command; it drives that way for about a second, then stops.
+- The whole time, it's watching the ultrasonic sensor. If something gets within
+  50 cm, the obstacle behaviour takes over no matter what. That's a safety thing,
+  and it overrides your command.
+
+When it hits an obstacle, it stops and looks down with the colour sensor. If
+what's in front is **red**, it treats it as a thing to pick up and runs the
+arm's pick-and-place. If it's anything else, it turns away: a ~90° pivot to the
+**right**, then it re-checks. Still blocked? It does a U-turn (keeps turning
+right until it's ~180° around, so now it faces left of where it started) to
+escape a corner instead of turning straight back into the same wall. Once the
+path is clear it picks up whatever you'd last told it to do.
+
+If you flip `LINE_FOLLOWING_ENABLED` back to `1`, the two IR sensors on GPIO 34
+and 39 steer it along a line, and it patrols forward by default. One warning if
+you go editing that flag: it feeds a `#if`, and it **must** be `1` or `0`. We
+once set it to `TRUE`, the preprocessor read the unknown `TRUE` as `0`, and the
+whole feature silently switched off with no error. That cost an afternoon.
 
 ---
 
-### `…/readings`
+## Talking to it over MQTT
 
-```json
-{
-  "device_id": "WRBT202642",
-  "timestamp": 1712500030,
-  "uptime_s":  30,
+Everything the robot publishes is rooted at `robot/devices/<DEVICE_ID>/`, and
+out of the box `DEVICE_ID` is `WRBT202642`. Commands go to a few `robot/cmd/...`
+topics. The broker, credentials and device ID all live in
+[defines.h](include/defines.h).
 
-  "environment": {
-    "temperature_c":   24.5,
-    "humidity_pct":    61.2,
-    "air_quality_ppm": 412.3,
-    "air_quality_v":   1.24
-  },
+### What it publishes
 
-  "imu": {
-    "accel_x":        0.12,
-    "accel_y":       -0.05,
-    "accel_z":        9.79,
-    "gyro_x":         0.001,
-    "gyro_y":        -0.003,
-    "gyro_z":         0.000,
-    "temperature_c":  28.4
-  },
-
-  "proximity": {
-    "distance_cm": 42.5,
-    "valid":       true
-  },
-
-  "location": {
-    "lat":        -1.286389,
-    "lon":        36.817223,
-    "altitude_m": 1650.1,
-    "speed_kmph": 0.0,
-    "satellites": 8,
-    "valid":      true
-  },
-
-  "color": {
-    "present":    true,
-    "valid":      true,
-    "r":          1240,
-    "g":           980,
-    "b":           512,
-    "clear":      2730,
-    "color_temp": 4200,
-    "lux":         145,
-    "dominant":   "RED"
-  },
-
-  "system": {
-    "rssi":      -52,
-    "transport": "wifi"
-  }
-}
-```
-
-| Field | Unit | Source |
+| Topic | When | What |
 | --- | --- | --- |
-| `environment.temperature_c` | °C | DHT11 |
-| `environment.humidity_pct` | % RH | DHT11 |
-| `environment.air_quality_ppm` | ppm CO₂ (estimated) | MQ-135 |
-| `environment.air_quality_v` | V | MQ-135 raw ADC |
-| `imu.accel_*` | m/s² | MPU6050 (±8 g) |
-| `imu.gyro_*` | rad/s | MPU6050 (±500 °/s) |
-| `imu.temperature_c` | °C | MPU6050 die |
-| `proximity.distance_cm` | cm | HC-SR04 (-1 = no echo) |
-| `location.*` | — | GPS / TinyGPS++ |
-| `color.r/g/b/clear` | 16-bit raw | TCS34725 |
-| `color.color_temp` | K | TCS34725 |
-| `color.lux` | lux | TCS34725 |
-| `color.dominant` | enum | `RED` · `GREEN` · `BLUE` · `YELLOW` · `WHITE` · `BLACK` · `UNKNOWN` |
-| `color.present` | bool | `false` when the sensor is absent |
-| `system.rssi` | dBm | WiFi |
+| `…/boot` | once, at startup | "I'm online", plus IP and uptime |
+| `…/readings` | every 5 s | a full snapshot of every sensor |
+| `…/heartbeat` | every 5 s | a tiny "still alive" ping |
 
-When `color.present` is `false`, the rest of the `color` block is omitted —
-consumers can use this to distinguish "sensor absent" from "dark reading".
+There are also `…/events/motion`, `…/events/freefall` and `…/events/zero_motion`
+topics wired up for the IMU. Fair warning: the register-level event detection on
+the MPU6500 path is currently a stub, so those don't fire yet. The plumbing is
+there for when someone finishes it.
 
----
+### What you can send it
 
-### `…/heartbeat`
+There are three command topics.
 
-```json
-{
-  "device_id": "WRBT202642",
-  "timestamp": 1712500030,
-  "uptime_s":  30,
-  "rssi":      -52
-}
-```
+#### `robot/cmd/drive`
 
----
-
-### `…/events/motion` · `…/events/freefall` · `…/events/zero_motion`
-
-```json
-{
-  "device_id": "WRBT202642",
-  "event":     "motion",
-  "timestamp": 1712500045,
-  "uptime_s":  45,
-  "accel_x":   3.12,
-  "accel_y":  -1.45,
-  "accel_z":   9.81
-}
-```
-
----
-
-### `robot/cmd/drive` (inbound)
-
-Controls the two-wheel base. The firmware pushes the command to a size-1
-overwrite queue so the latest instruction always wins.
+Move the wheels.
 
 ```json
 { "cmd": "forward" }
 { "cmd": "forward", "speed": 60 }
 ```
 
-| Field | Type | Default | Description |
-| --- | --- | --- | --- |
-| `cmd` | string | required | See table below |
-| `speed` | integer | `-1` (cruise) | Target duty 0 – 100 %. Omit to use `MOTOR_SPEED_DEFAULT` (80 %). |
+`cmd` is one of `forward`, `backward`, `left`, `right`, `stop`, `brake`. `speed`
+is optional (0 to 100 %); leave it out and it uses the cruise default. `left` and
+`right` are treated as a single ~90° pivot, not a continuous spin. A
+forward/backward command drives for about a second and then stops on its own.
+That's the open-loop "distance per command" knob (`DRIVE_RUN_MS`), since we have
+no wheel encoders yet.
 
-| `cmd` value | Behaviour |
-| --- | --- |
-| `"forward"` | Both wheels forward |
-| `"backward"` | Both wheels reverse |
-| `"left"` | Left wheel reverse, right forward (pivot left) |
-| `"right"` | Left wheel forward, right reverse (pivot right) |
-| `"stop"` | Coast — speed forced to 0, direction cleared |
-| `"brake"` | Active brake — ENA/ENB high, both directions LOW |
+About that ramp: a task wakes every 12 ms and nudges the live PWM duty toward
+the target a few percent at a time, instead of jumping straight there. That's
+what stops the robot from lurching and spinning its wheels. There's also a
+`MotorSetFeedback()` hook sitting empty, waiting for the day someone wires up
+encoders and drops a PID loop in. The gains are already in defines.h.
 
-#### Smooth speed ramping
+#### `robot/cmd/arm`
 
-`motor_speed_task` runs every `MOTOR_RAMP_MS` (12 ms) and steps the live PCA
-duty toward the latest target by at most `MOTOR_RAMP_STEP` (4 %) per tick.
-The result is smooth acceleration and deceleration instead of jerky direction
-changes that cause wheel slip or mechanical shock. With defaults, 0 → 80 %
-cruise takes ~240 ms; the same applies on braking.
-
-A hook (`MotorSetFeedback(left_rpm, right_rpm)`) is in place for closed-loop
-PID control once wheel encoders are wired — the gains are already defined in
-[defines.h:160-162](include/defines.h#L160-L162).
-
----
-
-### `robot/cmd/arm` (inbound)
-
-Moves one joint on the PCA9685 servo arm. Multiple commands can be queued
-(depth 4), so a full pose can be set with four successive messages.
+Move one joint.
 
 ```json
 { "joint": "shoulder", "angle": 45 }
-{ "joint": "gripper",  "angle": 20, "hold": true }
+{ "joint": "gripper",  "angle": 40, "hold": true }
 ```
 
-| Field | Type | Default | Description |
-| --- | --- | --- | --- |
-| `joint` | string | required | `"base"` · `"shoulder"` · `"elbow"` · `"gripper"` |
-| `angle` | integer | required | 0 – 180 degrees |
-| `hold` | boolean | depends on joint | Keep PWM active after settling. Shoulder/elbow hold by default; base/gripper release by default. Use `true` on the gripper when it must clamp a load. |
+`joint` is `base`, `shoulder`, `elbow` or `gripper`; `angle` is 0 to 180. The
+optional `hold` keeps the PWM on after the move, which is useful on the gripper
+when it needs to keep clamping something. Shoulder and elbow ignore `hold` by
+default and release anyway, for the overheating reason above. You can queue up to
+four of these, so you can set a whole pose with four quick messages.
 
-The interpolation in `MoveServoSmooth` *is* the settle, so successive joint
-commands dispatch back-to-back without an artificial delay.
+#### `robot/cmd/pose`
 
----
-
-### `robot/cmd/pose` (inbound) — inverse kinematics
-
-Solves a Cartesian target into joint angles and moves all three joints (base,
-shoulder, elbow) together with smooth interpolation. Optionally sets the
-gripper in the same command.
+Give it a point in space and let it do the inverse kinematics.
 
 ```json
 { "x": 80, "y": 0, "z": 50 }
-{ "x": 80, "y": 0, "z": 50, "gripper": 30 }
+{ "x": 80, "y": 0, "z": 50, "gripper": 40 }
 ```
 
-| Field | Type | Default | Description |
-| --- | --- | --- | --- |
-| `x` | float | 0 | mm in the arm's base frame, horizontal axis |
-| `y` | float | 0 | mm in the arm's base frame, horizontal axis |
-| `z` | float | 0 | mm above the shoulder pivot |
-| `gripper` | integer | `-1` | 0 – 180 °, or `-1` to leave unchanged |
+`x`, `y`, `z` are millimetres in the arm's base frame (z is height above the
+shoulder pivot). The arm solves that into joint angles and moves all three joints
+together, smoothly. Its reach is 100 + 100 = 200 mm; ask for something outside
+that and it just refuses with two beeps. `gripper` is optional. You can queue two
+poses so a follow-up is lined up while the first is still moving.
 
-#### Arm geometry
+### The `…/readings` payload
 
-| Constant | Value | Meaning |
-| --- | --- | --- |
-| `ARM_SHOULDER_LEN_MM` | 100 | shoulder pivot → elbow pivot |
-| `ARM_ELBOW_LEN_MM` | 100 | elbow pivot → gripper tip |
-| `ARM_STEP_DEG` | 2 ° | max joint step per interpolation tick |
-| `ARM_STEP_MS` | 15 ms | interpolation tick period |
+This is the big one, a full snapshot every five seconds:
 
-Reach envelope = `ARM_SHOULDER_LEN_MM + ARM_ELBOW_LEN_MM` = 200 mm. Targets
-outside it are silently rejected with two short beeps; `ArmSolveIK()` returns
-`false` and the pose is dropped.
-
-The pose queue has depth 2, so a follow-up pose can be queued while the
-current one is interpolating.
-
----
-
-## IMU Event Detection (MPU6050 Register Configuration)
-
-The Adafruit MPU6050 library does not expose free-fall or zero-motion detection,
-so the firmware writes directly to the relevant registers after `mpu.begin()`.
-`ConfigureIMUEvents()` in [src/imu.cpp](src/imu.cpp) sets:
-
-| Register | Address | Value | Meaning |
-| --- | --- | --- | --- |
-| `MOT_THR` | 0x1F | 5 | Motion threshold: 5 × 32 mg = 160 mg |
-| `MOT_DUR` | 0x20 | 1 | Must exceed threshold for 1 ms |
-| `FF_THR` | 0x1D | 17 | Free-fall threshold: 17 mg |
-| `FF_DUR` | 0x1E | 100 | Must be below threshold for 100 ms |
-| `ZRMOT_THR` | 0x21 | 4 | Zero-motion threshold |
-| `ZRMOT_DUR` | 0x22 | 4 | 4 consecutive samples stationary |
-| `INT_PIN_CFG` | 0x37 | 0x00 | Active-high, push-pull, 50 µs pulse |
-| `INT_ENABLE` | 0x38 | 0xE0 | FF (bit7) + MOT (bit6) + ZMOT (bit5) |
-
-`INT_STATUS` (0x3A) is read-clear. `CheckIMUEvents()` is called after every IMU
-sample; detected events are pushed to `g_event_queue` (depth 5) for immediate
-publishing by `event_task` on CPU1.
-
----
-
-## FreeRTOS Architecture
-
-```text
-CPU0                               CPU1
-───────────────────────────────    ──────────────────────────────────────────
-led_task         500 ms timer      network_init_task  (once, self-deletes)
-dht_task        2000 ms timer        WiFi + NTP sync
-imu_task         500 ms timer        MQTT connect + subscribe cmd topics
-ultrasonic_task 1000 ms timer        Publish boot message → …/boot
-mq135_task      2000 ms timer        Start 5 s pub_timer
-gps_task        1000 ms timer        Set NET_READY_BIT
-                 100 ms serial poll
-color_task      1000 ms timer      publish_task   (waits on g_publish_sem)
-  (self-deletes if absent)           peek all sensor queues → build JSON
-motor_cmd_task  (blocks on queue)    → …/readings + …/heartbeat
-  ← robot/cmd/drive                event_task     (blocks on g_event_queue)
-  → MotorSetDirection()              → …/events/motion
-motor_speed_task 12 ms ramp tick     → …/events/freefall
-  → MotorSetDuty() via PCA9685       → …/events/zero_motion
-servo_cmd_task  (blocks on queue)
-  ← robot/cmd/arm
-  → MoveServoSmooth() via PCA9685
-pose_cmd_task   (blocks on queue)
-  ← robot/cmd/pose
-  → ArmSolveIK() + interpolated move
+```json
+{
+  "device_id": "WRBT202642",
+  "timestamp": 1712500030,
+  "uptime_s":  30,
+  "environment": { "temperature_c": 24.5, "humidity_pct": 61.2, "air_quality_ppm": 412.3, "air_quality_v": 1.24 },
+  "imu":         { "accel_x": 0.12, "accel_y": -0.05, "accel_z": 9.79, "gyro_x": 0.001, "gyro_y": -0.003, "gyro_z": 0.0, "temperature_c": 28.4 },
+  "proximity":   { "distance_cm": 42.5, "valid": true },
+  "location":    { "lat": -1.286389, "lon": 36.817223, "altitude_m": 1650.1, "speed_kmph": 0.0, "satellites": 8, "valid": true },
+  "color":       { "present": true, "valid": true, "r": 1240, "g": 980, "b": 512, "clear": 2730, "color_temp": 4200, "lux": 145, "dominant": "RED" },
+  "system":      { "rssi": -52, "transport": "wifi" }
+}
 ```
 
-### Queue and Semaphore Map
-
-| Handle | Type | Depth | Item | Producer | Consumer |
-| --- | --- | --- | --- | --- | --- |
-| `g_dht_queue` | Queue | 1 | `dht_data_t` | `dht_task` | `publish_task` |
-| `g_imu_queue` | Queue | 1 | `imu_reading_t` | `imu_task` | `publish_task` |
-| `g_sonic_queue` | Queue | 1 | `float` | `ultrasonic_task` | `publish_task` |
-| `g_mq135_queue` | Queue | 1 | `mq135_data_t` | `mq135_task` | `publish_task` |
-| `g_gps_queue` | Queue | 1 | `gps_data_t` | `gps_task` | `publish_task` |
-| `g_color_queue` | Queue | 1 | `color_data_t` | `color_task` | `publish_task` |
-| `g_event_queue` | Queue | 5 | `imu_event_t` | `imu_task` | `event_task` |
-| `g_motor_cmd_queue` | Queue | 1 | `motor_cmd_t` | MQTT `callback` | `motor_cmd_task` |
-| `g_servo_cmd_queue` | Queue | 4 | `servo_cmd_t` | MQTT `callback` | `servo_cmd_task` |
-| `g_pose_cmd_queue` | Queue | 2 | `arm_pose_cmd_t` | MQTT `callback` | `pose_cmd_task` |
-| `g_publish_sem` | Binary semaphore | — | — | `pub_timer` (5 s) | `publish_task` |
-| `s_*_sem` | Binary semaphores | — | — | sensor timers | sensor tasks |
-| `g_net_events` | Event group | — | Bit 0 = NET_READY | `network_init_task` | `publish_task`, `event_task` |
-
-Sensor queues use `xQueueOverwrite()` (latest wins). The motor queue also uses
-`xQueueOverwrite()` so stale direction commands never accumulate. The servo
-queue is FIFO (depth 4) for atomic full-arm poses; the pose queue is FIFO
-(depth 2) so a follow-up IK target can be lined up while the first one is
-interpolating.
-
-Direction/duty hand-off between `motor_cmd_task` and `motor_speed_task` is
-guarded by a `portMUX_TYPE` critical section ([tasks.cpp:188-190](src/tasks.cpp#L188-L190)).
+A couple of notes. `proximity.distance_cm` is `-1` when the ultrasonic got no
+echo (out of range), not 0, so `valid` tells you whether to trust it. And when
+the colour sensor isn't fitted, `color.present` is `false` and the rest of that
+block is left out, so a consumer can tell "no sensor" apart from "it's just dark
+in here".
 
 ---
 
-## Optional Build-Flag Features
+## How it's all stitched together (FreeRTOS)
 
-Two extra integration paths ship in the tree but are disabled by default;
-they activate only when their `build_flags` are set in `platformio.ini`.
+The robot runs a pile of small FreeRTOS tasks split across the ESP32's two cores.
+The short version: sensor tasks read their sensor and drop the result into a
+one-slot queue; a publish task gathers all those latest values every five seconds
+and ships the JSON; command tasks block on their queue waiting for something from
+MQTT. Networking lives on one core so a slow WiFi moment can't stall the sensors
+on the other.
 
-| Flag | File | What it adds |
-| --- | --- | --- |
-| `-D ENABLE_BLE` | [src/ble.cpp](src/ble.cpp) | BLE GATT server with WRITE `cmd` + NOTIFY `status` characteristics — second control channel when WiFi is out of range. |
-| `-D ENABLE_NETWIZARD` | [src/wifi_config.cpp](src/wifi_config.cpp) | NetWizard captive-portal WiFi provisioning with **triple-reset** credential wipe via `RTC_DATA_ATTR`. Drop-in replacement for the hardcoded `WIFI_SSID` / `WIFI_PASSWORD`. |
+The one piece of plumbing worth calling out, because it bit us: the **patrol
+task** (`line_follow_task`) is the *only* thing that drains the MQTT drive queue.
+So even though line following is off, that task still has to run. If it ever
+deleted itself, your drive commands would vanish into a queue nobody reads, and
+the robot would look dead while happily logging "command received". It hands
+every motor instruction to `motor_cmd_task`, which stays the single owner of the
+motors so two bits of code never fight over them.
 
-Neither is enabled in the default build.
+Here's the queue map if you need it:
+
+| Queue | Depth | Carries | From | To |
+| --- | --- | --- | --- | --- |
+| `g_dht_queue` | 1 | DHT reading | dht_task | publish_task |
+| `g_imu_queue` | 1 | IMU reading | imu_task | publish_task |
+| `g_sonic_queue` | 1 | distance | ultrasonic_task | publish_task |
+| `g_mq135_queue` | 1 | air quality | mq135_task | publish_task |
+| `g_gps_queue` | 1 | location | gps_task | publish_task |
+| `g_color_queue` | 1 | colour | color_task | publish_task |
+| `g_event_queue` | 5 | IMU event | imu_task | event_task |
+| `g_drive_cmd_queue` | 1 | drive command | MQTT callback | patrol task |
+| `g_motor_cmd_queue` | 1 | motor command | patrol task | motor_cmd_task |
+| `g_servo_cmd_queue` | 4 | joint command | MQTT callback | servo_cmd_task |
+| `g_pose_cmd_queue` | 2 | pose target | MQTT callback | pose_cmd_task |
+
+The single-slot queues use "latest wins" (`xQueueOverwrite`) on purpose. For a
+sensor reading or a drive command, the newest value is the only one that matters,
+and stale ones piling up would just add lag.
 
 ---
 
-## Build
+## Optional extras
+
+Two integrations ship in the tree but stay off unless you switch them on with a
+build flag in [platformio.ini](platformio.ini):
+
+- `-D ENABLE_BLE` adds a BLE control channel ([src/ble.cpp](src/ble.cpp)), handy
+  when WiFi isn't around.
+- `-D ENABLE_NETWIZARD` adds captive-portal WiFi setup with a triple-reset
+  credential wipe ([src/wifi_config.cpp](src/wifi_config.cpp)), instead of the
+  hardcoded SSID and password.
+
+Neither is on in the default build.
+
+---
+
+## Building it
+
+It's a PlatformIO project, so:
 
 ```bash
 pio run                          # compile
-pio run -t upload                # flash to ESP32
-pio device monitor -b 115200     # serial output
+pio run -t upload                # flash the ESP32
+pio device monitor -b 115200     # watch the serial log
 ```
 
-Dependencies (auto-installed by PlatformIO via [platformio.ini](platformio.ini)):
+PlatformIO pulls the libraries itself from [platformio.ini](platformio.ini): the
+Adafruit PCA9685 / MPU6050 / TCS34725 drivers, the DHT library, PubSubClient for
+MQTT, ArduinoJson v7, and TinyGPSPlus. The board is the `upesy_wroom`
+(ESP32-WROOM-32).
 
-- `Adafruit PWM Servo Driver Library` — PCA9685 (servos + motor enables)
-- `Adafruit MPU6050` — IMU driver
-- `Adafruit TCS34725` — RGB colour sensor
-- `DHT sensor library` — DHT11 temperature/humidity
-- `PubSubClient` — MQTT client
-- `ArduinoJson` v7 — JSON serialization
-- `TinyGPSPlus` — NMEA GPS parser
-- `PCF8574 library` — I/O expander (L298N direction pins)
+On boot it runs a couple of self-tests before the tasks start. It scans the I2C
+bus and prints what answers (if the PCA9685 doesn't show up, nothing will move,
+and now you'll know why), drives the wheels forward and back for a second each,
+and sweeps every arm joint through its range. Watch the serial log the first
+time; it tells you what's actually working.
 
-Board: `upesy_wroom` (ESP32-WROOM-32).
+---
+
+## Authors
+
+- Sebastian Muchui
+- Gloria Ngei
+- Glen Okoth
+
+## License
+
+MIT

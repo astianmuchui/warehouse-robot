@@ -4,12 +4,12 @@
 
 DHT dht(DHT_PIN, DHT11);
 
-
 void InitializeDHT()
 {
   return dht.begin();
 }
 
+/** ReadDHT - temperature + humidity (either may be NaN on a failed read). */
 dht_data_t ReadDHT()
 {
   float humidity = dht.readHumidity();

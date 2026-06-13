@@ -23,10 +23,11 @@ QueueHandle_t g_color_queue;
 static SemaphoreHandle_t s_led_sem;
 static void led_timer_cb(TimerHandle_t) { xSemaphoreGive(s_led_sem); }
 
-/* Scan the I2C bus and print every address that ACKs.  Run once at boot before
-   any I2C device is initialised, so we can tell from the serial log whether the
-   PCA9685 (0x40), IMU (0x68) and colour sensor (0x29) are actually reachable
-   — the usual reason "nothing moves" is the PCA9685 simply not answering. */
+/**
+ * i2c_scan - print every I2C address that ACKs. Run at boot before any device
+ * init so the serial log shows whether the PCA9685/IMU/colour sensor are
+ * reachable; "nothing moves" is usually the PCA9685 not answering.
+ */
 static void i2c_scan()
 {
     Serial.println("[I2C] Scanning bus...");
@@ -66,27 +67,20 @@ void setup()
     Serial.begin(115200);
 
     initialize_pins();
-    InitBuzzer();          /* quiet PWM buzzer — must precede any Pulsate/Beep */
-    /* PCF8574 I/O expander disabled — no longer fitted (all I/O moved to PCA9685) */
+    InitBuzzer();          /* must precede any Pulsate/Beep */
 
-    /* Bring up I2C explicitly (with the correct ESP32 pins) before any device
-       init, then scan so the serial log shows what's actually on the bus. */
     Wire.begin(I2C_SDA, I2C_SCL);
     Wire.setClock(100000);
     i2c_scan();
 
-    /* Soft boot chirp (was three loud 80/60/40 ms blasts) */
     Beep(2);
 
-    /* PCA9685 first — both the L298N control lines and the servos hang off it,
-       so MotorInit() needs a live PWM driver to write zeros to. */
+    /* PCA9685 before MotorInit: the servos hang off it and it must be live. */
     InitServoDriver();
     MotorInit();
 
-    /* Boot motor self-test: forward 1 s, backward 1 s, then stop.  Runs here
-       before the FreeRTOS motor tasks start, so nothing else is driving the
-       motors.  Duty is set directly (the ramping motor_speed_task isn't up yet)
-       at the default cruise speed. */
+    /* Motor self-test, before the FreeRTOS motor tasks exist so nothing else
+       drives the wheels. Duty is set directly (no ramp task yet). */
     Serial.println("[Motor] Self-test: forward 1s, backward 1s");
     MotorSetDirection(MOTOR_FORWARD);
     MotorSetDuty(MOTOR_SPEED_DEFAULT);
@@ -97,12 +91,8 @@ void setup()
     MotorSetDuty(0);
     Serial.println("[Motor] Self-test done");
 
-    /* ── Servo-sweep boot diagnostic (servo walk) ────────────────────────────
-       Walk each arm servo through its range once at boot so you can confirm all
-       four joints respond and the new 1.0–2.0 ms pulse calibration is correct.
-       Runs before the FreeRTOS tasks start, so nothing else is driving the bus.
-       Each joint sweeps 60→120→90 then releases. Servos are driven one at a time
-       to keep the 5 V rail's peak current down. */
+    /* Servo-walk boot diagnostic: sweep each joint 60->120->90 so you can see
+       all four respond. One at a time to keep 5V rail peak current down. */
     {
         const struct { uint8_t ch; const char *name; } servowalk[] = {
             { SERVO_CH_BASE,     "base"     },
@@ -119,7 +109,7 @@ void setup()
             delay(SERVO_SETTLE_MS);
             SetServoAngle(servowalk[i].ch, 90);
             delay(SERVO_SETTLE_MS);
-            DisableServo(servowalk[i].ch);   /* release before the next joint */
+            DisableServo(servowalk[i].ch);
             delay(150);
         }
         Serial.println("[ServoWalk] Done — all four joints should have moved");
@@ -137,7 +127,7 @@ void setup()
     g_gps_queue       = xQueueCreate(1, sizeof(gps_data_t));
     g_event_queue     = xQueueCreate(5, sizeof(imu_event_t));
     g_motor_cmd_queue = xQueueCreate(1, sizeof(motor_cmd_t));
-    g_drive_cmd_queue = xQueueCreate(1, sizeof(motor_cmd_t)); /* MQTT → patrol */
+    g_drive_cmd_queue = xQueueCreate(1, sizeof(motor_cmd_t)); /* MQTT -> patrol */
     g_servo_cmd_queue = xQueueCreate(4, sizeof(servo_cmd_t));
     g_pose_cmd_queue  = xQueueCreate(2, sizeof(arm_pose_cmd_t));
     g_color_queue     = xQueueCreate(1, sizeof(color_data_t));
@@ -159,10 +149,9 @@ void setup()
     xTaskCreatePinnedToCore(servo_cmd_task,   "ServoCmd",  3072, NULL, 2, NULL, CPU0);
     xTaskCreatePinnedToCore(pose_cmd_task,    "PoseCmd",   4096, NULL, 2, NULL, CPU0);
     xTaskCreatePinnedToCore(color_task,       "Color",     3072, NULL, 1, NULL, CPU0);
-    /* Line following + obstacle avoidance. Higher priority than the motor_cmd
-       task it feeds so its steering decisions aren't starved; it drives only
-       through g_motor_cmd_queue, so motor_cmd_task remains the sole motor owner. */
-    xTaskCreatePinnedToCore(line_follow_task, "LineFollow", 3072, NULL, 2, NULL, CPU1);
+    /* Patrol task drains the MQTT drive queue, so it must run even with
+       line-following off or drive commands never reach the motors. */
+    xTaskCreatePinnedToCore(line_follow_task, "Patrol", 3072, NULL, 2, NULL, CPU1);
 }
 
 void loop()

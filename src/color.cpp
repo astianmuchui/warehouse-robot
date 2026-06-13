@@ -3,27 +3,21 @@
 #include <Adafruit_TCS34725.h>
 #include "defines.h"
 
-/*  TCS34725 colour sensor 
- *  Optional sensor.  The whole module is written so the firmware behaves
- *  identically whether or not the sensor is physically present:
+/*
+ * TCS34725 colour sensor. Optional: the firmware behaves the same whether or not
+ * it's fitted. InitializeColorSensor probes the bus once; ReadColor returns
+ * valid=false when the sensor is absent so callers never read garbage.
  *
- *    - InitializeColorSensor() probes the I2C bus once at boot and latches the
- *      result in s_enabled.
- *    - is_color_sensor_enabled() lets any caller skip colour logic cleanly.
- *    - ReadColor() returns a struct with valid=false when the sensor is absent,
- *      so the publish/serial paths never read garbage.
- *
- *  Future plan: pick red objects.  The dominant-colour classifier already
- *  reports COLOR_RED, so that logic can hang off ReadColor().dominant later.
- *  */
-
-static Adafruit_TCS34725 s_tcs(TCS34725_INTEGRATIONTIME_50MS, TCS34725_GAIN_4X);
+ * 154 ms integration + 16X gain: readings off the matte surface came back very
+ * dark (clear ~30), which starved the classifier. More light keeps the channels
+ * large enough to tell red apart.
+ */
+static Adafruit_TCS34725 s_tcs(TCS34725_INTEGRATIONTIME_154MS, TCS34725_GAIN_16X);
 static bool s_enabled = false;
 
+/** InitializeColorSensor - probe the bus and latch whether the sensor answered. */
 void InitializeColorSensor()
 {
-    /* Wire.begin() is already called by the IMU init; calling it again is
-       harmless but we guard the probe so a missing sensor can't hang the bus. */
     if (s_tcs.begin(TCS34725_ADDR, &Wire))
     {
         s_enabled = true;
@@ -41,34 +35,36 @@ bool is_color_sensor_enabled()
     return s_enabled;
 }
 
-/* Classify the dominant colour from normalised RGB.  Deliberately simple and
-   threshold-based so it stays predictable on a warehouse line; tune as needed. */
+/**
+ * classify - simple threshold classifier on RGB normalised to the clear channel.
+ * The black gate is low (c < 15): the old c < 80 was higher than real readings
+ * off this surface and forced every read to BLACK.
+ */
 static color_name_t classify(uint16_t r, uint16_t g, uint16_t b, uint16_t c)
 {
-    if (c < 80)                       return COLOR_BLACK;   /* almost no light back */
+    if (c < 15) return COLOR_BLACK;
 
-    /* Normalise to the clear channel to cancel out ambient brightness. */
     float rn = (float)r / (float)c;
     float gn = (float)g / (float)c;
     float bn = (float)b / (float)c;
 
-    /* Near-equal channels with high clear → white/grey. */
+    /* Near-equal channels with high clear -> white. */
     if (rn > 0.28f && gn > 0.28f && bn > 0.28f &&
         fabsf(rn - gn) < 0.10f && fabsf(gn - bn) < 0.10f)
         return COLOR_WHITE;
 
     if (rn > gn && rn > bn)
     {
-        /* Red vs yellow: yellow has a strong green component too. */
-        if (gn > 0.30f && bn < 0.25f) return COLOR_YELLOW;
+        if (gn > 0.30f && bn < 0.25f) return COLOR_YELLOW; /* yellow has strong green too */
         return COLOR_RED;
     }
-    if (gn > rn && gn > bn)            return COLOR_GREEN;
-    if (bn > rn && bn > gn)            return COLOR_BLUE;
+    if (gn > rn && gn > bn) return COLOR_GREEN;
+    if (bn > rn && bn > gn) return COLOR_BLUE;
 
     return COLOR_UNKNOWN;
 }
 
+/** ReadColor - one reading; valid=false when the sensor is absent. */
 color_data_t ReadColor()
 {
     color_data_t out = {};
@@ -76,7 +72,7 @@ color_data_t ReadColor()
     out.dominant = COLOR_UNKNOWN;
 
     if (!s_enabled)
-        return out;   /* sensor absent — caller checks .valid */
+        return out;
 
     uint16_t r, g, b, c;
     s_tcs.getRawData(&r, &g, &b, &c);

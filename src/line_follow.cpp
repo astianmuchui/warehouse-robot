@@ -5,32 +5,19 @@
 
 #include "defines.h"
 
-/* ── Patrol: line following + obstacle avoidance + command override ───────────
- *  The robot patrols autonomously. Priority, highest first:
- *
- *    1. Obstacle      — ultrasonic closer than OBSTACLE_THRESHOLD_CM → stop and
- *                       beep, re-check until clear. Overrides everything,
- *                       including an active external command (safety).
- *    2. External cmd  — a drive command from MQTT (g_drive_cmd_queue) takes over
- *                       for PATROL_CMD_HOLD_MS, then patrol resumes.
- *    3. Line follow   — when the IR sensors see a line, steer along it.
- *    4. Patrol        — default: no line, no command → drive FORWARD.
- *
- *  Two IR reflectance sensors steer; the HC-SR04 ultrasonic gives obstacle
- *  avoidance. All driving goes through g_motor_cmd_queue so motor_cmd_task
- *  stays the single owner of motor state (and we get its smooth speed ramp).
- *
- *  Line truth table (IR_ON_LINE == HIGH means "over the black line"):
- *    L on,  R on   → both on the line  → drive FORWARD
- *    L on,  R off  → drifted right     → steer LEFT
- *    L off, R on   → drifted left      → steer RIGHT
- *    L off, R off  → no line           → patrol FORWARD (not stop)
- * ──────────────────────────────────────────────────────────────────────────── */
+/*
+ * Patrol task: obstacle avoidance + MQTT drive override, with optional IR line
+ * following. Priority, highest first:
+ *   1. Obstacle    - too close -> stop, inspect, turn away. Overrides commands.
+ *   2. External    - an MQTT drive command holds for a window, then expires.
+ *   3. Line follow - steer along the line (only when LINE_FOLLOWING_ENABLED).
+ * All driving goes through g_motor_cmd_queue so motor_cmd_task stays the sole
+ * owner of motor state.
+ */
 
+/** InitLineSensors - GPIO34/39 are input-only; the IR modules drive the line. */
 void InitLineSensors()
 {
-    /* GPIO34/39 are input-only and have no internal pull resistors, so a plain
-       INPUT is correct — the IR module actively drives the line. */
     pinMode(IR_LEFT_PIN, INPUT);
     pinMode(IR_RIGHT_PIN, INPUT);
 }
@@ -38,24 +25,38 @@ void InitLineSensors()
 bool ReadIRLeft()  { return digitalRead(IR_LEFT_PIN)  == IR_ON_LINE; }
 bool ReadIRRight() { return digitalRead(IR_RIGHT_PIN) == IR_ON_LINE; }
 
-/* Post a drive command to motor_cmd_task. speed < 0 → cruise default.
-   pivot defaults to false: patrol/line-follow turns are continuous nudges,
-   not the discrete 90° pivot that external commands request. */
+/** drive - post a drive command to motor_cmd_task (speed < 0 = cruise default). */
 static void drive(motor_dir_t dir, int16_t speed = -1, bool pivot = false)
 {
     motor_cmd_t cmd = { dir, speed, pivot };
     xQueueOverwrite(g_motor_cmd_queue, &cmd);
 }
 
+/**
+ * pivot_blocking - request a discrete pivot through motor_cmd_task and block
+ * until it finishes, so the caller can re-read the ultrasonic afterward. Goes
+ * through the queue (not direct motor writes) since motor_speed_task's ramp
+ * would stomp a direct write. dir must be MOTOR_LEFT or MOTOR_RIGHT.
+ */
+static void pivot_blocking(motor_dir_t dir, uint32_t dwell_ms)
+{
+    drive(dir, TURN_DUTY_PCT, /*pivot=*/true);
+    vTaskDelay(pdMS_TO_TICKS(dwell_ms + 150));
+}
+
+/*
+ * Always runs: it drains g_drive_cmd_queue, so disabling the whole task would
+ * silently drop every MQTT drive command. LINE_FOLLOWING_ENABLED only gates the
+ * IR steering block; with it off, movement is MQTT-only.
+ */
 void line_follow_task(void *)
 {
-#if !LINE_FOLLOWING_ENABLED
-    Serial.println("[Line] Line following disabled — task not running");
-    vTaskDelete(nullptr);
-    return;
-#else
+#if LINE_FOLLOWING_ENABLED
     InitLineSensors();
-    Serial.println("[Patrol] Patrol active — forward by default, line-follow + obstacle pause");
+    Serial.println("[Patrol] Active — line-follow steering ON, MQTT override, obstacle turn-away");
+#else
+    Serial.println("[Patrol] Active — MQTT-controlled movement, obstacle turn-away (line-follow OFF)");
+#endif
 
     static const char *names[] = {
         "FORWARD", "BACKWARD", "LEFT", "RIGHT", "STOP", "BRAKE"
@@ -63,22 +64,16 @@ void line_follow_task(void *)
 
     motor_dir_t last_dir = MOTOR_STOP;
     bool obstacle_active = false;
-    /* Set once we've already handled the current obstacle (picked a red object
-       or decided to wait it out), so we don't re-run the arm on every loop tick
-       while the same object is still in front of the sensor. Cleared when the
-       path goes clear. */
-    bool obstacle_handled = false;
+    bool obstacle_handled = false; /* latch so we don't re-handle the same object every tick */
 
-    /* External-command override: when an MQTT drive command arrives we honour it
-       until this deadline (millis), then patrol resumes. 0 = no active command. */
+    /* ext_cmd is the active MQTT command; cmd_until_ms is its deadline (0 = none).
+       We resume ext_cmd after clearing an obstacle rather than stopping mid-route. */
     uint32_t cmd_until_ms = 0;
     motor_cmd_t ext_cmd   = { MOTOR_STOP, -1, false };
 
     while (true)
     {
-        /* ── 1. Obstacle avoidance (highest priority, overrides commands too) ──
-           A negative reading means "no echo / out of range", which is NOT an
-           obstacle — only treat a positive distance under the threshold as one. */
+        /* 1. Obstacle. A negative reading is "no echo", not an obstacle. */
         float dist = ReadUltrasonic();
         if (dist > 0.0f && dist <= OBSTACLE_THRESHOLD_CM)
         {
@@ -88,43 +83,45 @@ void line_follow_task(void *)
                 Serial.printf("[Patrol] Obstacle %.1f cm — stopping\n", dist);
             }
 
-            /* Always stop first — the object is right in front of us. */
             drive(MOTOR_STOP);
             last_dir = MOTOR_STOP;
 
-            /* Treat the obstacle as an object: inspect it with the downward
-               colour sensor exactly once per obstacle. A RED object is picked
-               and placed 90° left; anything else we just wait out. The
-               obstacle_handled latch stops us re-running the arm every tick
-               while the same object sits in front of the sensor. */
             if (!obstacle_handled)
             {
                 obstacle_handled = true;
 
+                /* Handling blocks for a while; push the command deadline forward
+                   by that time so the maneuver doesn't eat the command window. */
+                uint32_t handle_start = millis();
+
                 color_data_t col = ReadColor();
                 if (col.valid && col.dominant == COLOR_RED)
                 {
-                    /* RED → pick it up. Don't reverse first: backing off would
-                       move the object out of the arm's reach. */
+                    /* RED -> pick it up. Don't move first or the object leaves
+                       the arm's reach. */
                     Serial.println("[Patrol] Object is RED — picking up");
                     PickPlaceRedObject();
-                    /* Object removed; fall through next loop to re-check distance
-                       (path should now be clear) and resume patrol. */
                 }
                 else
                 {
-                    /* Not a target → back off a bit, then wait for it to clear.
-                       Reverse open-loop for OBSTACLE_REVERSE_MS, then stop. */
-                    Serial.printf("[Patrol] Object is %s (not red) — reversing then waiting\n",
+                    /* Turn away: RIGHT ~90°, re-check, then U-turn if still blocked. */
+                    Serial.printf("[Patrol] Object is %s (not red) — turning RIGHT to avoid\n",
                                   col.valid ? ColorName(col.dominant) : "unreadable");
-                    drive(MOTOR_BACKWARD);
-                    vTaskDelay(pdMS_TO_TICKS(OBSTACLE_REVERSE_MS));
-                    drive(MOTOR_STOP);
-                    last_dir = MOTOR_STOP;
+                    pivot_blocking(MOTOR_RIGHT, OBSTACLE_TURN_90_MS);
+
+                    float after = ReadUltrasonic();
+                    if (after > 0.0f && after <= OBSTACLE_THRESHOLD_CM)
+                    {
+                        Serial.printf("[Patrol] Still blocked at %.1f cm — U-turn (left of original)\n",
+                                      after);
+                        pivot_blocking(MOTOR_RIGHT, OBSTACLE_UTURN_MS);
+                    }
                 }
+
+                if (cmd_until_ms != 0)
+                    cmd_until_ms += (millis() - handle_start);
             }
 
-            /* Beep while blocked, then loop back to re-check distance. */
             Pulsate(BUZZER_PIN, 1, OBSTACLE_BEEP_MS);
             continue;
         }
@@ -132,25 +129,22 @@ void line_follow_task(void *)
         if (obstacle_active)
         {
             obstacle_active = false;
-            obstacle_handled = false;   /* ready to inspect the next object */
+            obstacle_handled = false;
+            last_dir = MOTOR_STOP;
             Serial.println("[Patrol] Path clear — resuming");
         }
 
-        /* ── 2. External command override ─────────────────────────────────────
-           A new MQTT command starts/refreshes a PATROL_CMD_HOLD_MS window. While
-           that window is open the command's direction is what we drive (patrol
-           and line-follow are suspended), then we fall back to patrol. */
+        /* 2. External command. A new MQTT command opens/refreshes a hold window. */
         motor_cmd_t incoming;
         if (xQueueReceive(g_drive_cmd_queue, &incoming, 0) == pdTRUE)
         {
             ext_cmd = incoming;
-            /* Forward/backward get a longer window so one command covers real
-               ground; other commands use the short default. */
             uint32_t hold_ms = (ext_cmd.dir == MOTOR_FORWARD ||
                                 ext_cmd.dir == MOTOR_BACKWARD)
                                    ? PATROL_DRIVE_HOLD_MS
                                    : PATROL_CMD_HOLD_MS;
             cmd_until_ms = millis() + hold_ms;
+            last_dir     = MOTOR_STOP;
             Serial.printf("[Patrol] Command %s held for %u ms\n",
                           (ext_cmd.dir <= MOTOR_BRAKE) ? names[(int)ext_cmd.dir] : "???",
                           (unsigned)hold_ms);
@@ -160,9 +154,6 @@ void line_follow_task(void *)
         {
             if ((int32_t)(millis() - cmd_until_ms) < 0)
             {
-                /* Command window still open — drive it and skip patrol. Re-post
-                   each tick is cheap (xQueueOverwrite) and keeps the duty fresh;
-                   motor_cmd_task ignores repeats of the same direction. */
                 if (ext_cmd.dir != last_dir)
                 {
                     drive(ext_cmd.dir, ext_cmd.speed, ext_cmd.pivot);
@@ -171,23 +162,26 @@ void line_follow_task(void *)
                 vTaskDelay(pdMS_TO_TICKS(LINE_LOOP_MS));
                 continue;
             }
-            /* Window expired — clear it and fall through to patrol */
             cmd_until_ms = 0;
-            last_dir     = MOTOR_STOP;   /* force a fresh patrol drive command */
-            Serial.println("[Patrol] Command expired — resuming patrol");
+            ext_cmd.dir  = MOTOR_STOP;
+            if (last_dir != MOTOR_STOP)
+            {
+                drive(MOTOR_STOP);
+                last_dir = MOTOR_STOP;
+            }
+            Serial.println("[Patrol] Command expired — stopping (awaiting next command)");
         }
 
-        /* ── 3/4. Line following, else patrol forward ─────────────────────────
-           No line (both sensors off) is the patrol case: keep moving FORWARD
-           rather than stopping, so the robot patrols when off-line. */
+#if LINE_FOLLOWING_ENABLED
+        /* 3. Line following: both sensors off -> forward; otherwise recentre. */
         bool left  = ReadIRLeft();
         bool right = ReadIRRight();
 
         motor_dir_t dir;
-        if (left && right)       dir = MOTOR_FORWARD;   /* centred on line */
-        else if (left && !right) dir = MOTOR_LEFT;      /* drifted right → correct left  */
-        else if (!left && right) dir = MOTOR_RIGHT;     /* drifted left  → correct right */
-        else                     dir = MOTOR_FORWARD;   /* no line → patrol forward */
+        if (left && right)       dir = MOTOR_FORWARD;
+        else if (left && !right) dir = MOTOR_LEFT;   /* drifted right -> correct left */
+        else if (!left && right) dir = MOTOR_RIGHT;  /* drifted left  -> correct right */
+        else                     dir = MOTOR_FORWARD;
 
         if (dir != last_dir)
         {
@@ -195,8 +189,8 @@ void line_follow_task(void *)
             drive(dir);
             last_dir = dir;
         }
+#endif
 
         vTaskDelay(pdMS_TO_TICKS(LINE_LOOP_MS));
     }
-#endif /* LINE_FOLLOWING_ENABLED */
 }

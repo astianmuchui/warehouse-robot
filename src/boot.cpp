@@ -2,14 +2,9 @@
 #include <Wire.h>
 #include "defines.h"
 
-/**
- * @initialize_pins - Initializes the device pins
- *
- */
-
+/** initialize_pins - set up serial, I2C, and the GPIO directions. */
 void initialize_pins()
 {
-
     Serial.begin(115200);
     Wire.begin(I2C_SDA, I2C_SCL);
     Wire.setClock(100000);

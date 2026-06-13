@@ -99,12 +99,12 @@ bool Network::reconnect_mqtt()
         _mqtt.subscribe(TOPIC_CMD_DRIVE);
         _mqtt.subscribe(TOPIC_CMD_ARM);
         _mqtt.subscribe(TOPIC_CMD_POSE);
-        Beep(2);   /* MQTT connected: two soft chirps */
+        Beep(2);   /* connected */
     }
     else
     {
         Serial.printf("[MQTT] Failed (state=%d)\n", _mqtt.state());
-        Beep(3);   /* MQTT error: three soft chirps */
+        Beep(3);   /* error */
     }
     return ok;
 }
@@ -143,8 +143,7 @@ bool        Network::is_mqtt_connected()  { return _mqtt.connected(); }
 bool        Network::is_net_connected()   { return WiFi.isConnected(); }
 const char *Network::transport_name() const { return "wifi"; }
 
-/* MQTT callbacks  */
-
+/** printPayload - echo an inbound topic + payload to serial. */
 void printPayload(char *topic, byte *message, unsigned int length)
 {
     Serial.printf("[CMD] %s → ", topic);
@@ -153,13 +152,14 @@ void printPayload(char *topic, byte *message, unsigned int length)
     Serial.println();
 }
 
+/**
+ * callback - parse an inbound command and route it to the right queue. No beep
+ * here (it would block the MQTT loop); each command task chirps when it acts.
+ */
 void callback(char *topic, byte *message, unsigned int length)
 {
     printPayload(topic, message, length);
-    /* No buzzer ack here — it would block the MQTT loop and delay command
-       dispatch. Each command task chirps softly once it actually acts. */
 
-    /* Null-terminate the message into a local buffer */
     char buf[256];
     size_t len = (length < sizeof(buf) - 1) ? length : sizeof(buf) - 1;
     memcpy(buf, message, len);
@@ -202,11 +202,8 @@ void callback(char *topic, byte *message, unsigned int length)
             return;
         }
 
-        /* Route to the patrol task (not motor_cmd_task directly): the patrol
-           task arbitrates between its default forward/line behaviour and
-           external commands, honouring this command for PATROL_CMD_HOLD_MS
-           before resuming patrol. The patrol task remains the sole producer
-           to g_motor_cmd_queue. */
+        /* Route to the patrol task, not motor_cmd_task: it arbitrates commands
+           vs. obstacle avoidance and is the sole producer to g_motor_cmd_queue. */
         xQueueOverwrite(g_drive_cmd_queue, &cmd);
     }
 
@@ -268,8 +265,7 @@ void callback(char *topic, byte *message, unsigned int length)
     }
 }
 
-/* Helpers */
-
+/** unix_ts - current epoch seconds, or 0 if NTP hasn't synced yet. */
 static uint32_t unix_ts()
 {
     time_t t = time(nullptr);
@@ -279,8 +275,10 @@ static uint32_t uptime_s() { return millis() / 1000; }
 
 static void on_publish_timer(TimerHandle_t) { xSemaphoreGive(g_publish_sem); }
 
-/* Network init task  */
-
+/**
+ * network_init_task - bring up WiFi/NTP/MQTT, publish the boot message, start
+ * the publish timer, signal NET_READY, then delete itself. Runs once.
+ */
 static void network_init_task(void *)
 {
     g_net.set_callback(callback);
