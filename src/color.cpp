@@ -3,15 +3,6 @@
 #include <Adafruit_TCS34725.h>
 #include "defines.h"
 
-/*
- * TCS34725 colour sensor. Optional: the firmware behaves the same whether or not
- * it's fitted. InitializeColorSensor probes the bus once; ReadColor returns
- * valid=false when the sensor is absent so callers never read garbage.
- *
- * 154 ms integration + 16X gain: readings off the matte surface came back very
- * dark (clear ~30), which starved the classifier. More light keeps the channels
- * large enough to tell red apart.
- */
 static Adafruit_TCS34725 s_tcs(TCS34725_INTEGRATIONTIME_154MS, TCS34725_GAIN_16X);
 static bool s_enabled = false;
 
@@ -35,11 +26,6 @@ bool is_color_sensor_enabled()
     return s_enabled;
 }
 
-/**
- * classify - simple threshold classifier on RGB normalised to the clear channel.
- * The black gate is low (c < 15): the old c < 80 was higher than real readings
- * off this surface and forced every read to BLACK.
- */
 static color_name_t classify(uint16_t r, uint16_t g, uint16_t b, uint16_t c)
 {
     if (c < 15) return COLOR_BLACK;
